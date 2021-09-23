@@ -17,7 +17,7 @@ def get_dataset(dataset, batch, imsize, workers):
         test_dataset = Cityscapes(list_path='./data_list/Cityscapes', split='val', crop_size=imsize, train=False)
 
     elif dataset == 'GtoC':
-        train_dataset = Cityscapes(list_path='./data_list/GtoC', split='train', crop_size=imsize)
+        train_dataset = GTA5(list_path='./data_list/GtoC', split='train', crop_size=imsize)
         test_dataset = None
 
     elif dataset == 'M':
