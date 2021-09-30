@@ -290,12 +290,12 @@ def content_sim(cs, ct):
     content_t = content_t.transpose(0, 1)
     G = content_s @ content_t
 
-    G = 15 * G
-    G1 = s1(G)
-    G2 = s2(G)
+    # G = 15 * G
+    # G1 = s1(G)
+    # G2 = s2(G)
 
     # print(np.round(G.cpu().numpy(), 2))
-    return G1, G2
+    return G
 
 
 def content_aware_style_loss(gt_gram, convert_gram, G, MSE):

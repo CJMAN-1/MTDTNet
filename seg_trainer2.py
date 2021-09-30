@@ -104,9 +104,9 @@ class Trainer:
         self.set_zero_grad()
         pred = self.nets['T'](imgs[self.source], lbl=labels[self.source])
         loss_seg_src = self.nets['T'].loss_seg
-        pred_tgt = self.nets['T'](imgs[self.target], lbl=labels[self.target])
-        loss_seg_tgt = self.nets['T'].loss_seg
-        loss_task = loss_seg_src + loss_seg_tgt
+        # pred_tgt = self.nets['T'](imgs[self.target], lbl=labels[self.target])
+        # loss_seg_tgt = self.nets['T'].loss_seg
+        loss_task = loss_seg_src #  + loss_seg_tgt
         loss_task.backward()
         self.optims['T'].step()
         self.losses['T'] = loss_task.data.item()
@@ -169,6 +169,8 @@ class Trainer:
                 self.best_miou = miou
                 self.writer.add_scalar('Best MIoU/G2C', self.best_miou, self.step)
                 torch.save(self.nets['T'].state_dict(), './pretrained_model/deeplab_city_%.2f.pth' % miou)
+            else:
+                self.nets['T'] = Deeplab(num_classes=19, restore_from='pretrained_model/deeplab_city_%.2f' % self.best_miou).cuda()
         self.set_train()
 
         return self.best_miou
@@ -206,20 +208,23 @@ class Trainer:
                 for dset in self.opt.datasets:
                     imgs[dset], labels[dset] = imgs[dset][:min_batch], labels[dset][:min_batch]
             # training
-            curr = self.nets['T']
+            # curr = self.nets['T']
             self.train_task(imgs, labels)
+            self.tensor_board_log(imgs, labels)
             new_miou = self.eval()
+
             while new_miou > curr_miou:
+                
                 print('MIOU score is updated / CURRENT STEP :', self.step)
-                curr = self.nets['T']
+                # curr = self.nets['T']
                 curr_miou = new_miou
                 self.train_task(imgs, labels)
                 new_miou = self.eval()
-            self.nets['T'] = curr
+            # self.nets['T'] = curr
 
             # tensorboard
-            if self.step % self.opt.tensor_freq == 0:
-                self.tensor_board_log(imgs, labels)
+            # if self.step % self.opt.tensor_freq == 0:
+            #     self.tensor_board_log(imgs, labels)
             # evaluation
             # if self.step % self.opt.eval_freq == 0:
             #     self.eval()

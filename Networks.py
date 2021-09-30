@@ -518,7 +518,7 @@ class Multi_Head_Discriminator(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(64*64*128, 500),
             nn.ReLU(),
-            nn.Linear(500, 1),
+            nn.Linear(500, num_domains),
         )
 
     def forward(self, inputs):
