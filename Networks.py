@@ -235,8 +235,8 @@ class Class_wise_Separator(nn.Module):
     """
 
 class StyleEncoder(nn.Module):
-    def __init__(self):
-        super(StyleEncoder, self).__init__(n_class, converts, channel)
+    def __init__(self, n_class, converts, channel):
+        super(StyleEncoder, self).__init__()
         self.n_class = n_class
         self.channel = channel
         self.converts = converts
@@ -255,7 +255,7 @@ class StyleEncoder(nn.Module):
         )
 
     def forward(feature_dict, segmap_dict, opt):
-        mat = dict()
+        mat, gamma, beta = dict(), dict(), dict()
         b, c, h, w = feature_dict[opt.source].shape
         for dataset in opt.datasets:
             rpmat = self.region_wise_pooling(feature_dict[dataset], segmap_dict[dataset])
@@ -293,13 +293,13 @@ class StyleEncoder(nn.Module):
                 component_mask_area = torch.sum(mask)
 
                 if component_mask_area > 0:
-                    middle_mu = style_codes[i][j] # c
+                    middle_mu = style_code[i][j] # c
                     if middle_mu.sum() != 0:
                         component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
 
                         middle_avg[i].masked_scatter_(mask, component_mu) 
                     else:
-                        middle_mu = style_codes[i][-1]
+                        middle_mu = style_code[i][-1]
                         component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
 
                         middle_avg[i].masked_scatter_(mask, component_mu) 

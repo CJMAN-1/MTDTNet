@@ -3,3 +3,6 @@ pretrained
 pretrained_model
 tensorboard
 checkpoint
+__pycache__
+sync_batchnorm/__pycache__
+dataloader/__pycache__
