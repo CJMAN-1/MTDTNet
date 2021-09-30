@@ -207,7 +207,115 @@ class Class_wise_Separator(nn.Module):
     # def style_sampling(self, seg, ):
 
 
+#////////////////////////////////////////////////////////////////
+"""TODO : build module that extract gamma, beta tensor from image and segmap"""
+"""INPUT : feature dictionary, segmap dictionary 
+        -> e.g. feature[src] = F_x, segmap[tgt] = seg_y"""
+"""OUTPUT : Affine tensor gamma beta dictionary"""
+""" 1. REGION WISE POOLING -> Matrix1 : B*cls*C 
+    2. GLOBAL POOLING -> Matrix2 : B*1*C
+    3. concat Mat1, Mat2 : B*(cls+1)*C
+    4. MLP B*(cls+1)*C -> B*(cls+1)*C'
+    5. broadcasting : B*(cls+1)*C' -> B*C'*H*W
+    5. Multi-head convolution (like SPADE) : gamma = conv1(F), beta = conv2(F)
+    """
 
+class StyleEncoder(nn.Module):
+    def __init__(self):
+        super(StyleEncoder, self).__init__(n_class, converts, channel)
+        self.n_class = n_class
+        self.channel = channel
+        self.converts = converts
+
+        self.FC = nn.Sequential(
+            nn.linear(channel, channel),
+            nn.ReLU(True),
+        )
+        self.conv_gamma = nn.Sequential(
+            nn.Conv2d(channel, channel, 3,1,1),
+            nn.ReLU(True),
+        )
+        self.conv_beta= nn.Sequential(
+            nn.Conv2d(channel, channel, 3,1,1),
+            nn.ReLU(True),
+        )
+
+    def forward(feature_dict, segmap_dict, opt):
+        mat = dict()
+        b, c, h, w = feature_dict[opt.source].shape
+        for dataset in opt.datasets:
+            rpmat = self.region_wise_pooling(feature_dict[dataset], segmap_dict[dataset])
+            gpmat = feature_dict[dataset].mean(dim=(2,3)).unsqueeze(1)
+            print(gpmat.shape)
+            m1 = torch.cat((rpmat,gpmat), dim=1)
+            # shape : b*(cls+1)*c
+            n = m1.shape[1] # == cls+1
+            m2 = m1.view(b*n, c)
+            mat[dataset] = self.FC(m2)
+            # broadcasting
+            f = self.broadcasting(segmap_dict[dataset], mat[dataset])
+            # output shape : b*c*h*w
+            gamma[dataset] = self.conv_gamma(f)
+            beta[dataset] = self.conv_beta(f)
+
+        for convert in self.converts:
+            # [G2C, C2G]
+            source, target = convert.split('2') # G C
+            f = self.broadcasting(segmap_dict[source], mat[target])
+
+            gamma[convert] = self.conv_gamma(f)
+            beta[convert] = self.conv_beta(f)
+
+        return gamma, beta
+
+    def broadcasting(segmap, style_code):
+        #TODO : instance-mask segmap
+        b, cls, h, w = segmap.shape
+        c = style_code.shape[-1]
+        middle_avg = torch.zeros(b, c, h, w).cuda()
+        for i in range(b):
+            for j in range(cls):
+                mask = segmap.bool()[i, j]
+                component_mask_area = torch.sum(mask)
+
+                if component_mask_area > 0:
+                    middle_mu = style_codes[i][j] # c
+                    if middle_mu.sum() != 0:
+                        component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
+
+                        middle_avg[i].masked_scatter_(mask, component_mu) 
+                    else:
+                        middle_mu = style_codes[i][-1]
+                        component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
+
+                        middle_avg[i].masked_scatter_(mask, component_mu) 
+
+        return middle_avg
+
+
+    def region_wise_pooling(self, codes, segmap):
+        segmap = F.interpolate(segmap, size=codes.size()[2:], mode='nearest')
+
+        b_size = codes.shape[0]
+        # h_size = codes.shape[2]
+        # w_size = codes.shape[3]
+        f_size = codes.shape[1]
+
+        s_size = segmap.shape[1]
+
+        codes_vector = torch.zeros((b_size, s_size, f_size), dtype=codes.dtype, device=codes.device)
+
+        for i in range(b_size):
+            for j in range(s_size):
+                component_mask_area = torch.sum(segmap.bool()[i, j])
+
+                if component_mask_area > 0:
+                    codes_component_feature = codes[i].masked_select(segmap.bool()[i, j]).reshape(f_size,  component_mask_area).mean(1)
+                    codes_vector[i][j] = codes_component_feature
+
+        # shape : b*cls*c
+        return codes_vector
+#////////////////////////////////////////////////////////////////
 
 class Generator(nn.Module):
     def __init__(self):
@@ -388,7 +496,7 @@ class Gram_Discriminator(nn.Module):
 
 
 class Multi_Head_Discriminator(nn.Module):
-    def __init__(self, channels=3):
+    def __init__(self, num_domains, channels=3):
         super(Multi_Head_Discriminator, self).__init__()
         self.Conv = nn.Sequential(
             # input size: 256x256
