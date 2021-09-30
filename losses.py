@@ -71,9 +71,11 @@ class Losses:
             patch_real, fc_real = real[dset]
             patch_dis_loss += F.relu(1. - patch_real).mean()
             if dset == self.opt.datasets[0]:
-                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.zeros_like(fc_real))
+                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.zeros(fc_real))
+            elif dset == self.opt.datasets[1]:
+                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.ones(fc_real))
             else:
-                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.ones_like(fc_real))
+                domain_dis_loss += self.loss_fns['CE'](fc_real, 2 * torch.ones(fc_real))
 
         for convert in fake.keys():
             patch_fake, fc_fake = fake[convert]
