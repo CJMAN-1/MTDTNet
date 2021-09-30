@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class Losses:
-    def __init__(self, opt, source, target):
+    def __init__(self, opt):
         self.opt = opt
         self.loss_fns = dict()
         self.loss_fns['L1'] = nn.L1Loss()
@@ -19,8 +19,6 @@ class Losses:
         self.alpha_dis_domain = 0.25
         self.alpha_gen_patch = 1 / 3
         self.alpha_gen_domain = 0.5
-        self.source = source
-        self.target = target
 
     def recon(self, imgs, recon_imgs):
         recon_loss = 0
@@ -72,18 +70,18 @@ class Losses:
         for dset in real.keys():
             patch_real, fc_real = real[dset]
             patch_dis_loss += F.relu(1. - patch_real).mean()
-            if dset == self.source:
-                domain_dis_loss += self.loss_fns['BCE'](fc_real, torch.zeros_like(fc_real))
+            if dset == self.opt.datasets[0]:
+                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.zeros_like(fc_real))
             else:
-                domain_dis_loss += self.loss_fns['BCE'](fc_real, torch.ones_like(fc_real))
+                domain_dis_loss += self.loss_fns['CE'](fc_real, torch.ones_like(fc_real))
 
         for convert in fake.keys():
             patch_fake, fc_fake = fake[convert]
             patch_dis_loss += F.relu(1. + patch_fake).mean()
             if convert[-1] == self.source:
-                domain_dis_loss += self.loss_fns['BCE'](fc_fake, torch.zeros_like(fc_fake))
+                domain_dis_loss += self.loss_fns['CE'](fc_fake, torch.zeros_like(fc_fake))
             else:
-                domain_dis_loss += self.loss_fns['BCE'](fc_fake, torch.ones_like(fc_fake))
+                domain_dis_loss += self.loss_fns['CE'](fc_fake, torch.ones_like(fc_fake))
 
         return self.alpha_dis_patch * patch_dis_loss + self.alpha_dis_domain * domain_dis_loss
 

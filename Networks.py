@@ -124,6 +124,20 @@ class Encoder(nn.Module):
         return output
 
 
+class Content_Encoder(nn.Module):
+    def __init__(self, channels=3):
+        super(Content_Encoder, self).__init__()
+        self.Conv = nn.Sequential(
+            spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.ReLU(True),
+            spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.ReLU(True),
+        )
+
+    def forward(self, inputs):
+        return self.Conv(inputs)
+
+
 class Class_wise_Separator(nn.Module):
     def __init__(self, source, target, n_class, ch=64):
         super(Class_wise_Separator, self).__init__()

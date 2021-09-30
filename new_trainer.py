@@ -109,10 +109,8 @@ class Trainer:
 
     def set_networks(self):
         self.nets['E'] = Encoder()
-        # TODO : content encoder 추가해야함.
-        '''
-        self.nets['CE'] = 
-        '''
+        self.nets['CE'] = Content_Encoder()
+        self.nets['SE'] = Style_Encoder()
         self.nets['G'] = Generator()
         self.nets['D'] = Multi_Head_Discriminator()
 
@@ -133,6 +131,9 @@ class Trainer:
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['CE'] = optim.Adam(self.nets['CE'].parameters(), lr=self.opt.lr_dra,
+                                                betas=(self.opt.beta1, 0.999),
+                                                weight_decay=self.opt.weight_decay)
+        self.optims['SE'] = optim.Adam(self.nets['SE'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['G'] = optim.Adam(self.nets['G'].parameters(), lr=self.opt.lr_dra,
@@ -177,26 +178,23 @@ class Trainer:
             seg[self.source] = labels[self.source]
             for target in self.targets:
                 seg[target] = pred2seg(self.nets['T'](imgs[target]))
-            gamma, beta = self.nets['SEAN'](features, seg)
+            gamma, beta = self.nets['SE'](features, seg)
             
             #Generator
             for convert in self.converts:
                 source, target = convert.split('2')
                 converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
 
-        # TODO : discriminator 수정필요.
-        '''
         for dset in self.opt.datasets:
             D_outputs_real[dset] = self.nets['D'][dset](slice_patches(imgs[dset]))
         
         for convert in self.converts:
             D_outputs_fake[convert] = self.nets['D'][](slice_patches(converted_imgs[convert]))
-        '''
+        
 
         loss_dis = self.loss_fns.dis(D_outputs_real, D_outputs_fake)
         loss_dis.backward()
-        for dset in self.datasets:
-            self.optims['D'][dset].step()
+        self.optims['D'].step()
         self.losses['D'] = loss_dis.data.item()
 
     def train_task(self, imgs, labels):  # Train Task Networks (T)
@@ -213,7 +211,7 @@ class Trainer:
             seg[self.source] = labels[self.source]
             for target in self.targets:
                 seg[target] = pred2seg(self.nets['T'](imgs[target]))
-            gamma, beta = self.nets['SEAN'](features, seg)
+            gamma, beta = self.nets['SE'](features, seg)
             
             #Generator
             for convert in self.task_converts:
@@ -248,7 +246,7 @@ class Trainer:
         seg[self.source] = labels[self.source]
         for target in self.targets:
             seg[target] = pred2seg(self.nets['T'](imgs[target]))
-        gamma, beta = self.nets['SEAN'](features, seg)
+        gamma, beta = self.nets['SE'](features, seg)
         
         #Generator
         # indirect recon
@@ -274,7 +272,7 @@ class Trainer:
 
         loss_esg = G_loss + Recon_loss + Consis_loss 
         loss_esg.backward()
-        for net in ['E', 'CE', 'G']:
+        for net in ['E', 'CE', 'SE', 'G']:
             self.optims[net].step()
         self.losses['G'] = G_loss.data.item()
         self.losses['R'] = Recon_loss.data.item()
@@ -296,7 +294,7 @@ class Trainer:
             seg[self.source] = labels[self.source]
             for target in self.targets:
                 seg[target] = pred2seg(self.nets['T'](imgs[target]))
-            gamma, beta = self.nets['SEAN'](features, seg)
+            gamma, beta = self.nets['SE'](features, seg)
             
             #Generator
             # indirect recon
