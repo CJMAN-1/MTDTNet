@@ -16,13 +16,22 @@ from losses import *
 from dataloader.Cityscapes import decode_labels
 from dataset import get_dataset
 
+def set_converts(source, targets):
+    converts = list()
+    task_converts = list()
 
+    for target in targets:
+        converts.append(source + '2' + target)
+        converts.append(target + '2' + source)
+        task_converts.append(source + '2' + target)
+
+    return converts, task_converts
 
 class Trainer:
     def __init__(self, opt):
         self.opt = opt
         self.imsize = opt.imsize
-        self.best_miou = 0.
+        self.best_miou = dict()
 
         self.train_loader, self.test_loader, self.data_iter = dict(), dict(), dict()
         for dset in self.opt.datasets:
@@ -38,11 +47,11 @@ class Trainer:
         self.checkpoint = './checkpoint/%s' % opt.ex
         self.datasets = opt.datasets
         self.source = opt.datasets[0]
-        self.target = opt.datasets[1]
-        self.s2t = self.source + '2' + self.target
-        self.t2s = self.target + '2' + self.source
-        self.converts = [self.s2t, self.t2s]
+        self.targets = opt.datasets[1:]
+        for target in self.targets:
+            self.best_miou[target] = 0.
         self.n_class = opt.n_class
+        self.converts, self.task_converts = set_converts(self.source, self.targets)
 
         self.loss_fns = Losses(opt, self.source, self.target)
 
@@ -77,7 +86,6 @@ class Trainer:
                     torch.save(self.nets[key][dset].state_dict(),
                                self.checkpoint + '/%d/net%s_%s.pth' % (self.step, key, dset))
             elif key == 'T':
-                if self.opt.task == 'clf':
                     for cv in self.test_converts:
                         torch.save(self.nets[key][cv].state_dict(),
                                    self.checkpoint + '/%d/net%s_%s.pth' % (self.step, key, cv))
@@ -101,22 +109,25 @@ class Trainer:
 
     def set_networks(self):
         self.nets['E'] = Encoder()
-        self.nets['S'] = Class_wise_Separator(self.source, self.target, self.n_class)
+        # TODO : content encoder 추가해야함.
+        '''
+        self.nets['CE'] = 
+        '''
         self.nets['G'] = Generator()
-        # self.nets['D'] = Multi_Head_Discriminator()
         self.nets['D'] = dict()
         for dset in self.datasets:
             self.nets['D'][dset] = PatchGAN_Discriminator()
+
         # initialization
-        # if self.opt.load_networks_step is not None:
-        #     self.load_networks(self.opt.load_networks_step)
+        if self.opt.load_networks_step is not None:
+            self.load_networks(self.opt.load_networks_step)
         for net in self.nets.keys():
             if net == 'D':
                     for dset in self.datasets:
                         init_params(self.nets[net][dset])
             else:
                 init_params(self.nets[net])
-        # self.nets['T'] = Deeplab(num_classes=19, init_weights='pretrained/DeepLab_init.pth')
+        
         self.nets['T'] = Deeplab(num_classes=19, restore_from='pretrained_model/deeplab_gta5_36.94')
 
         if self.opt.cuda:
@@ -131,15 +142,12 @@ class Trainer:
         self.optims['E'] = optim.Adam(self.nets['E'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
-        self.optims['S'] = optim.Adam(self.nets['S'].parameters(), lr=self.opt.lr_dra,
+        self.optims['CE'] = optim.Adam(self.nets['CE'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['G'] = optim.Adam(self.nets['G'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
-        # self.optims['D'] = optim.Adam(self.nets['D'].parameters(), lr=self.opt.lr_dra,
-        #                                         betas=(self.opt.beta1, 0.999),
-        #                                         weight_decay=self.opt.weight_decay)
         self.optims['D'] = dict()
         for dset in self.opt.datasets:
             self.optims['D'][dset] = optim.Adam(self.nets['D'][dset].parameters(), lr=self.opt.lr_dra,
@@ -180,20 +188,31 @@ class Trainer:
     def train_dis(self, imgs, labels):  # Train Discriminators(D)
         self.set_zero_grad()
         features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
-        for dset in self.opt.datasets:
-            with torch.no_grad():
-                features[dset] = self.nets['E'](imgs[dset])
-            D_outputs_real[dset] = self.nets['D'][dset](slice_patches(imgs[dset]))
-        seg[self.source] = labels[self.source]
-        seg[self.target] = pred2seg(self.nets['T'](imgs[self.target]))
-        # seg[self.target] = labels[self.target]
+        content_features, gamma, beta= dict(), dict(), dict()
         with torch.no_grad():
-            contents, styles = self.nets['S'](features, seg, converts = self.converts)
-            converted_imgs[self.s2t] = self.nets['G'](contents[self.s2t], styles[self.s2t])
-            converted_imgs[self.t2s] = self.nets['G'](contents[self.t2s], styles[self.t2s])
-        D_outputs_fake[self.s2t] = self.nets['D'][self.target](slice_patches(converted_imgs[self.s2t]))
-        D_outputs_fake[self.t2s] = self.nets['D'][self.source](slice_patches(converted_imgs[self.t2s]))
+            for dset in self.opt.datasets:
+                features[dset] = self.nets['E'](imgs[dset])
+                content_features[dset] = self.nets['CE'](features[dset])
+
+            seg[self.source] = labels[self.source]
+            for target in self.targets:
+                seg[target] = pred2seg(self.nets['T'](imgs[target]))
+            gamma, beta = self.nets['SEAN'](features, seg)
+            
+            #Generator
+            for convert in self.converts:
+                source, target = convert.split('2')
+                converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
+
+        # TODO : discriminator 수정필요.
+        '''
+        for dset in self.opt.datasets:
+            D_outputs_real[dset] = self.nets['D'][dset](slice_patches(imgs[dset]))
         
+        for convert in self.converts:
+            D_outputs_fake[convert] = self.nets['D'][](slice_patches(converted_imgs[convert]))
+        '''
+
         loss_dis = self.loss_fns.dis(D_outputs_real, D_outputs_fake)
         loss_dis.backward()
         for dset in self.datasets:
@@ -202,59 +221,80 @@ class Trainer:
 
     def train_task(self, imgs, labels):  # Train Task Networks (T)
         self.set_zero_grad()
-        features, converted_imgs, pred, seg = dict(), dict(), dict(), dict()
+        features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
+        content_features, gamma, beta= dict(), dict(), dict()
+        pred = dict()
+
         with torch.no_grad():
             for dset in self.opt.datasets:
                 features[dset] = self.nets['E'](imgs[dset])
+                content_features[dset] = self.nets['CE'](features[dset])
+
             seg[self.source] = labels[self.source]
-            seg[self.target] = pred2seg(self.nets['T'](imgs[self.target]))
-            # seg[self.target] = labels[self.target]
-            contents, styles = self.nets['S'](features, seg, converts=self.converts)
-            converted_imgs[self.s2t] = self.nets['G'](contents[self.s2t], styles[self.s2t])
+            for target in self.targets:
+                seg[target] = pred2seg(self.nets['T'](imgs[target]))
+            gamma, beta = self.nets['SEAN'](features, seg)
+            
+            #Generator
+            for convert in self.task_converts:
+                source, target = convert.split('2')
+                converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
+
 
         pred[self.source] = self.nets['T'](imgs[self.source], lbl=labels[self.source])
         loss_seg_src = self.nets['T'].loss_seg
-        pred[self.s2t] = self.nets['T'](converted_imgs[self.s2t], lbl=labels[self.source])
-        loss_seg_s2t = self.nets['T'].loss_seg
-        loss_task = loss_seg_src + loss_seg_s2t
+        loss_task = loss_seg_src
+        for convert in self.task_converts:
+            pred[convert] = self.nets['T'](converted_imgs[convert], lbl=labels[self.source])
+            loss_seg_s2t = self.nets['T'].loss_seg
+            loss_task = loss_task + loss_seg_s2t
+        
         loss_task.backward()
         self.optims['T'].step()
         self.losses['T'] = loss_task.data.item()
 
     def train_esg(self, imgs, labels):
         self.set_zero_grad()
-        features, converted_imgs, recon_imgs, D_outputs_fake, seg = dict(), dict(), dict(), dict(), dict()
+        features, converted_imgs, D_outputs_fake, seg = dict(), dict(), dict(), dict()
+        content_features, gamma, beta= dict(), dict(), dict()
+        direct_recon_imgs, indirect_recon_imgs = dict(), dict()
+        converted_content_features = dict()
+        # direct recon 
         for dset in self.opt.datasets:
             features[dset] = self.nets['E'](imgs[dset])
-            recon_imgs[dset] = self.nets['G'](features[dset], 0)
+            direct_recon_imgs[dset] = self.nets['G'](features[dset])
+            content_features[dset] = self.nets['CE'](features[dset])
+
         seg[self.source] = labels[self.source]
-        seg[self.target] = pred2seg(self.nets['T'](imgs[self.target]))
-        # seg[self.target] = labels[self.target]
-        contents, styles = self.nets['S'](features, seg, converts=self.converts)
+        for target in self.targets:
+            seg[target] = pred2seg(self.nets['T'](imgs[target]))
+        gamma, beta = self.nets['SEAN'](features, seg)
+        
+        #Generator
+        # indirect recon
+        for dset in self.opt.datasets:
+            indirect_recon_imgs[dset] = self.nets['G'](gamma[dset]*content_features[dset] + beta[dset])
 
-        converted_imgs[self.s2t] = self.nets['G'](contents[self.s2t], styles[self.s2t])
-        converted_imgs[self.t2s] = self.nets['G'](contents[self.t2s], styles[self.t2s])
-        D_outputs_fake[self.s2t] = self.nets['D'][self.target](slice_patches(converted_imgs[self.s2t]))
-        D_outputs_fake[self.t2s] = self.nets['D'][self.source](slice_patches(converted_imgs[self.t2s]))
-
-        converted_features, recon_imgs_ = dict(), dict()
-        converted_features[self.s2t] = self.nets['E'](converted_imgs[self.s2t])
-        converted_features[self.t2s] = self.nets['E'](converted_imgs[self.t2s])
-        converted_contents, converted_styles = self.nets['S'](converted_features, seg)
-        recon_imgs_[self.source] = self.nets['G'](converted_contents[self.source], converted_styles[self.source])
-        recon_imgs_[self.target] = self.nets['G'](converted_contents[self.target], converted_styles[self.target])
-
+        for convert in self.converts:
+            source, target = convert.split('2')
+            converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
+        '''
+        for convert in self.converts:
+            D_outputs_fake[convert] = self.nets['D'][](slice_patches(converted_imgs[convert]))
+        '''
+        
+        for convert in self.converts:
+            features[convert] = self.nets['E'](converted_imgs[convert])
+            converted_content_features[convert] = self.nets['CE'](features[convert])
        
-
-
-
         G_loss = self.loss_fns.gen(D_outputs_fake)
-        Recon_loss = self.loss_fns.recon(imgs, recon_imgs)
-        Consis_loss = self.loss_fns.recon(imgs, recon_imgs_)
+        Recon_loss = self.loss_fns.recon(imgs, direct_recon_imgs) + self.loss_fns.recon(imgs, indirect_recon_imgs)
+        # TODO : consis_loss 새로 짜야함.
+        Consis_loss = self.loss_fns.recon(content_features, converted_content_features)
 
-        loss_esg = G_loss + Recon_loss + Consis_loss  # + Regul_loss # (+ region-wise style loss for style resampling?)
+        loss_esg = G_loss + Recon_loss + Consis_loss 
         loss_esg.backward()
-        for net in ['E', 'S', 'G']:
+        for net in ['E', 'CE', 'G']:
             self.optims[net].step()
         self.losses['G'] = G_loss.data.item()
         self.losses['R'] = Recon_loss.data.item()
@@ -263,23 +303,29 @@ class Trainer:
     def tensor_board_log(self, imgs, labels):
         nrow = 2
         with torch.no_grad():
-            features, converted_imgs, recon_imgs, seg = dict(), dict(), dict(), dict()
+            features, converted_imgs, seg = dict(), dict(), dict()
+            content_features, gamma, beta= dict(), dict(), dict()
+            direct_recon_imgs, indirect_recon_imgs = dict(), dict()
+            
+            # direct recon 
             for dset in self.opt.datasets:
                 features[dset] = self.nets['E'](imgs[dset])
-                recon_imgs[dset] = self.nets['G'](features[dset], 0)
-            seg[self.source] = labels[self.source]
-            seg[self.target] = pred2seg(self.nets['T'](imgs[self.target]))
-            # seg[self.target] = labels[self.target]
-            contents, styles = self.nets['S'](features, seg, converts=self.converts)
-            converted_imgs[self.s2t] = self.nets['G'](contents[self.s2t], styles[self.s2t])
-            converted_imgs[self.t2s] = self.nets['G'](contents[self.t2s], styles[self.t2s])
+                direct_recon_imgs[dset] = self.nets['G'](features[dset])
+                content_features[dset] = self.nets['CE'](features[dset])
 
-            converted_features, recon_imgs_ = dict(), dict()
-            converted_features[self.s2t] = self.nets['E'](converted_imgs[self.s2t])
-            converted_features[self.t2s] = self.nets['E'](converted_imgs[self.t2s])
-            converted_contents, converted_styles = self.nets['S'](converted_features, seg)
-            recon_imgs_[self.source] = self.nets['G'](converted_contents[self.source], converted_styles[self.source])
-            recon_imgs_[self.target] = self.nets['G'](converted_contents[self.target], converted_styles[self.target])
+            seg[self.source] = labels[self.source]
+            for target in self.targets:
+                seg[target] = pred2seg(self.nets['T'](imgs[target]))
+            gamma, beta = self.nets['SEAN'](features, seg)
+            
+            #Generator
+            # indirect recon
+            for dset in self.opt.datasets:
+                indirect_recon_imgs[dset] = self.nets['G'](gamma[dset]*content_features[dset] + beta[dset])
+
+            for convert in self.converts:
+                source, target = convert.split('2')
+                converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
 
         # Input Images & Recon Images
         for dset in self.opt.datasets:
@@ -287,10 +333,10 @@ class Trainer:
             self.writer.add_image('1_Input_Images/1_%s' % dset, x, self.step)
             x = vutils.make_grid(slice_patches(imgs[dset].detach()), normalize=True, scale_each=True, nrow=4)
             self.writer.add_image('1_Input_Images/2_slice_%s' % dset, x, self.step)
-            x = vutils.make_grid(recon_imgs[dset].detach(), normalize=True, scale_each=True, nrow=nrow)
-            self.writer.add_image('2_Recon_Images/1_%s' % dset, x, self.step)
-            x = vutils.make_grid(recon_imgs_[dset].detach(), normalize=True, scale_each=True, nrow=nrow)
-            self.writer.add_image('2_Recon_Images/2_consis_%s' % dset, x, self.step)
+            x = vutils.make_grid(direct_recon_imgs[dset].detach(), normalize=True, scale_each=True, nrow=nrow)
+            self.writer.add_image('2_Recon_Images/1_direct_%s' % dset, x, self.step)
+            x = vutils.make_grid(indirect_recon_imgs[dset].detach(), normalize=True, scale_each=True, nrow=nrow)
+            self.writer.add_image('2_Recon_Images/2_indirect_%s' % dset, x, self.step)
 
 
         # Converted Images
@@ -317,24 +363,20 @@ class Trainer:
             x = decode_labels(pred, num_images=self.opt.batch)
             x = vutils.make_grid(x, normalize=True, scale_each=True, nrow=nrow)
             self.writer.add_image('4_Segmentation/2_Pred_%s' % key, x, self.step)
-        pred_t2s = self.nets['T'](converted_imgs[self.t2s])
-        pred_t2s = pred_t2s.data.cpu().numpy()
-        pred_t2s = np.argmax(pred_t2s, axis=1)
-        x = decode_labels(pred_t2s, num_images=self.opt.batch)
-        x = vutils.make_grid(x, normalize=True, scale_each=True, nrow=nrow)
-        self.writer.add_image('4_Segmentation/3_Pred_%s' % self.t2s, x, self.step)
-
+        
         self.set_train()
+
+        # 
         x = vutils.make_grid(imgs[self.opt.datasets[0]].detach(), normalize=True, scale_each=True, nrow=nrow)
         self.writer.add_image('1_Input_Images/1_%s' % self.opt.datasets[0], x, self.step)
 
-    def eval(self):
+    def eval(self, target):
         self.set_eval()
 
         miou = 0.
         confusion_matrix = np.zeros((19,) * 2)
         with torch.no_grad():
-            for batch_idx, (imgs, labels) in enumerate(self.test_loader['C']):
+            for batch_idx, (imgs, labels) in enumerate(self.test_loader[target]):
                 if self.opt.cuda:
                     imgs, labels = imgs.cuda(), labels.cuda()
                 labels = labels.long()
@@ -356,17 +398,21 @@ class Trainer:
                             % (self.step, miou))
             self.logger.info('======================================================')
             self.writer.add_scalar('MIoU/G2C', miou, self.step)
-            if miou > self.best_miou:
-                self.best_miou = miou
-                self.writer.add_scalar('Best MIoU/G2C', self.best_miou, self.step)
+            
+            if miou > self.best_miou[target]:
+                self.best_miou[target] = miou
+                self.writer.add_scalar('Best MIoU/G2C', self.best_miou[target], self.step)
                 # self.save_networks()
         self.set_train()
 
     def print_loss(self):
+        best_mious = ''
+        for target in self.targets:
+            best_mious += (target + ': ' + '%.2f'%self.best_miou[target] + '|' )
         self.logger.info(
-            '[%d/%d] D: %.2f| G: %.2f| R: %.2f| C: %.2f| T: %.2f| %.2f %s'
+            '[%d/%d] D: %.2f| G: %.2f| R: %.2f| C: %.2f| T: %.2f| %s %s'
             % (self.step, self.opt.iter,
-               self.losses['D'], self.losses['G'], self.losses['R'], self.losses['C'], self.losses['T'], self.best_miou, self.opt.ex))
+               self.losses['D'], self.losses['G'], self.losses['R'], self.losses['C'], self.losses['T'], best_mious, self.opt.ex))
 
     def train(self):
         self.set_default()
@@ -404,6 +450,7 @@ class Trainer:
                 self.tensor_board_log(imgs, labels)
             # evaluation
             if self.step % self.opt.eval_freq == 0:
-                self.eval()
+                for target in self.targets:
+                    self.eval(target)
             self.print_loss()
 
