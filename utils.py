@@ -172,12 +172,12 @@ def safe_load_state_dict(net, state_dict):
     if skipped:
         logging.info('Skipped loading some parameters: {}'.format(skipped))
 
-models = {}
-def register_model(name):
-    def decorator(cls):
-        models[name] = cls
-        return cls
-    return decorator
+# models = {}
+# def register_model(name):
+#     def decorator(cls):
+#         models[name] = cls
+#         return cls
+#     return decorator
 
 
 def gram(x):
@@ -403,8 +403,13 @@ def FDA_source_to_target(src_img, trg_img, L=0.1):
     return src_in_trg
 
 
-def pred2seg(pred):
-    return torch.argmax(pred, dim=1)
+def pred2seg(pred, n_class=19):
+    pred_ = F.softmax(pred, dim=1)
+    log_pred = F.log_softmax(pred, dim=1)
+    e = -(1/(n_class*math.log(n_class))) * torch.sum(pred_*log_pred, dim=1)
+    seg = torch.argmax(pred, dim=1)
+    seg[e>0.01] = -1
+    return seg
 
 
 def slice_patches(imgs, hight_slice=2, width_slice=4):
@@ -429,3 +434,70 @@ def check_road_patches(seg):
                 pair[batch].append(p+4)
     return pair
 
+
+def class_weight_by_frequency(seg, n_class):
+    b, h, w = seg.size()
+    freq = F.one_hot(seg + 1, num_classes=n_class+1).permute(0,3,1,2)  # B x (cls+1) x H x W
+    freq = torch.sum(freq, dim=(0, 2, 3))  # cls+1
+    freq = freq[1:].float()  # cls, 0: ignore label
+    for cls in range(n_class):
+        if freq[cls] > 0:
+            ratio = freq[cls] / (b*h*w)
+            if ratio > 1/n_class:
+                freq[cls] = (1-ratio)**2
+            else:
+                freq[cls] = 1+0.5
+    return freq
+
+
+# def CST(gamma, beta, seg, converts, n_class):
+#     dim_ = (2,3)
+#     for convert in converts:
+#         source, target = convert.split('2')
+#         h, w = gamma[source].shape[2:]
+#         segmap_source = F.one_hot(seg[source] + 1, num_classes=n_class+1).permute(0,3,1,2)
+#         segmap_target = F.one_hot(seg[source] + 1, num_classes=n_class+1).permute(0,3,1,2)
+#         segmap_source = F.interpolate(segmap_source.float(), size=(h,w), mode='nearest')
+#         segmap_target = F.interpolate(segmap_target.float(), size=(h,w), mode='nearest')  # B x cls x H x W
+#         # global mean, std
+#         gamma_source_mean = gamma[source].mean(dim=dim_, keepdim=True)  # B x C x 1 x 1
+#         gamma_source_std = gamma[source].std(dim=dim_, keepdim=True)
+#         gamma_target_mean = gamma[target].mean(dim=dim_, keepdim=True)
+#         gamma_target_std = gamma[target].std(dim=dim_, keepdim=True)
+#         beta_source_mean = beta[source].mean(dim=dim_, keepdim=True)  # B x C x 1 x 1
+#         beta_source_std = beta[source].std(dim=dim_, keepdim=True)
+#         beta_target_mean = beta[target].mean(dim=dim_, keepdim=True)
+#         beta_target_std = beta[target].std(dim=dim_, keepdim=True)
+        
+#         # new_gamma = (gamma_target_std * ((gamma[source] - gamma_source_mean) / (gamma_source_std + 1e-8)) + gamma_target_mean)
+#         # new_beta = (beta_target_std * ((beta[source] - beta_source_mean) / (beta_source_std + 1e-8)) + beta_target_mean)
+
+#         new_gamma = torch.zeros_like(gamma[source])
+#         new_beta = torch.zeros_like(beta[source])
+
+#         for cls in range(segmap_source.size(1)):
+#             gamma_source_cls = segmap_source[:,cls,:,:].unsqueeze(1) * gamma[source]
+#             gamma_target_cls = segmap_target[:,cls,:,:].unsqueeze(1) * gamma[target]
+#             beta_source_cls = segmap_source[:,cls,:,:].unsqueeze(1) * beta[source]
+#             beta_target_cls = segmap_target[:,cls,:,:].unsqueeze(1) * beta[target]
+
+#             if cls == 0:
+#                 # global mean, std
+#                 new_gamma += (gamma_target_std * ((gamma_source_cls - gamma_source_mean) / (gamma_source_std + 1e-8)) + gamma_target_mean)
+#                 new_beta += (beta_target_std * ((beta_source_cls - beta_source_mean) / (beta_source_std + 1e-8)) + beta_target_mean)
+#             else: 
+#             # class-wise mean, std
+#                 gamma_source_mean_cls = gamma_source_cls.mean(dim=dim_, keepdim=True)  # B x C x 1 x 1
+#                 gamma_source_std_cls = gamma_source_cls.std(dim=dim_, keepdim=True)
+#                 gamma_target_mean_cls = gamma_target_cls.mean(dim=dim_, keepdim=True)
+#                 gamma_target_std_cls = gamma_target_cls.std(dim=dim_, keepdim=True)
+#                 beta_source_mean_cls = beta_source_cls.mean(dim=dim_, keepdim=True)  # B x C x 1 x 1
+#                 beta_source_std_cls = beta_source_cls.std(dim=dim_, keepdim=True)
+#                 beta_target_mean_cls = beta_target_cls.mean(dim=dim_, keepdim=True)
+#                 beta_target_std_cls = beta_target_cls.std(dim=dim_, keepdim=True)
+                
+#                 new_gamma += (gamma_target_std_cls * ((gamma_source_cls - gamma_source_mean_cls) / (gamma_source_std_cls + 1e-8)) + gamma_target_mean_cls)
+#                 new_beta += (beta_target_std_cls * ((beta_source_cls - beta_source_mean_cls) / (beta_source_std_cls + 1e-8)) + beta_target_mean_cls)
+#         gamma[convert] = new_gamma
+#         beta[convert] = new_beta
+#     return gamma, beta

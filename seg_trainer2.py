@@ -43,7 +43,7 @@ class Trainer:
         self.converts = [self.s2t, self.t2s]
         self.n_class = opt.n_class
 
-        self.loss_fns = Losses(opt, self.source, self.target)
+        self.loss_fns = Losses(opt)
 
     def set_default(self):
         torch.backends.cudnn.deterministic = True
@@ -143,7 +143,7 @@ class Trainer:
         miou = 0.
         confusion_matrix = np.zeros((19,) * 2)
         with torch.no_grad():
-            for batch_idx, (imgs, labels) in enumerate(self.test_loader['C']):
+            for batch_idx, (imgs, labels) in enumerate(self.test_loader['I']):
                 if self.opt.cuda:
                     imgs, labels = imgs.cuda(), labels.cuda()
                 labels = labels.long()
@@ -158,7 +158,7 @@ class Trainer:
                         confusion_matrix))
                 miou = 100 * np.nanmean(score)
 
-                progress_bar(batch_idx, len(self.test_loader['C']), 'mIoU: %.3f' % miou)
+                progress_bar(batch_idx, len(self.test_loader['I']), 'mIoU: %.3f' % miou)
             # Save checkpoint.
             self.logger.info('======================================================')
             self.logger.info('Epoch: %d | Acc: %.3f%%'
@@ -211,23 +211,13 @@ class Trainer:
             # curr = self.nets['T']
             self.train_task(imgs, labels)
             self.tensor_board_log(imgs, labels)
-            new_miou = self.eval()
-
-            while new_miou > curr_miou:
-                
-                print('MIOU score is updated / CURRENT STEP :', self.step)
-                # curr = self.nets['T']
-                curr_miou = new_miou
-                self.train_task(imgs, labels)
-                new_miou = self.eval()
-            # self.nets['T'] = curr
 
             # tensorboard
-            # if self.step % self.opt.tensor_freq == 0:
-            #     self.tensor_board_log(imgs, labels)
+            if self.step % self.opt.tensor_freq == 0:
+                self.tensor_board_log(imgs, labels)
             # evaluation
-            # if self.step % self.opt.eval_freq == 0:
-            #     self.eval()
+            if self.step % self.opt.eval_freq == 0:
+                self.eval()
             self.print_loss()
 
 

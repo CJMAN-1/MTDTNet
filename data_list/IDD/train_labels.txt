@@ -27,6 +27,11 @@
 /data/datasets/IDD/gtFine/train/175/595035.png
 /data/datasets/IDD/gtFine/train/175/120682.png
 /data/datasets/IDD/gtFine/train/175/040477.png
+/data/datasets/IDD/gtFine/train/175/197480.png
+/data/datasets/IDD/gtFine/train/175/974291.png
+/data/datasets/IDD/gtFine/train/175/525465.png
+/data/datasets/IDD/gtFine/train/175/800125.png
+/data/datasets/IDD/gtFine/train/175/739271.png
 /data/datasets/IDD/gtFine/train/151/634501.png
 /data/datasets/IDD/gtFine/train/151/029583.png
 /data/datasets/IDD/gtFine/train/151/306597.png

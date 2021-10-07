@@ -124,18 +124,167 @@ class Encoder(nn.Module):
         return output
 
 
-class Content_Encoder(nn.Module):
-    def __init__(self, channels=3):
-        super(Content_Encoder, self).__init__()
+class Separator(nn.Module):
+    def __init__(self, imsize, dsets, ch=64):
+        super(Separator, self).__init__()
         self.Conv = nn.Sequential(
+            # batch_size x 256 x 4 x 4
             spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
             nn.ReLU(True),
             spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
             nn.ReLU(True),
         )
+        self.w = nn.ParameterDict()
+        h, w = imsize
+        for dset in dsets:
+            self.w[dset] = nn.Parameter(torch.ones(1, ch, h, w), requires_grad=True)
+
+    def forward(self, features, converts=None):
+        contents, styles, S_F = dict(), dict(), dict()  # S_F = S(F_X), see equation (2) in our paper.
+        for key in features.keys():
+            S_F[key] = self.Conv(features[key])
+            if '2' in key:  # to disentangle the features of converted images. (and to compute consistency loss)
+                source, target = key.split('2')
+                contents[key] = self.w[target] * S_F[key]
+                styles[key] = features[key] - contents[key]
+            else:  # to disentangle the features of input images.
+                contents[key] = self.w[key] * S_F[key]
+                styles[key] = features[key] - contents[key]
+        if converts is not None:  # for generating converted features.
+            for cv in converts:
+                source, target = cv.split('2')
+                contents[cv] = self.w[target] * S_F[source]
+        return contents, styles
+
+
+# class Style_Encoder(nn.Module):
+#     def __init__(self, channels=3):
+#         super(Style_Encoder, self).__init__()
+#         bin = functools.partial(nn.GroupNorm, 4)
+#         self.Encoder_Conv = nn.Sequential(
+#             nn.Conv2d(channels, 32, kernel_size=4, stride=2, padding=1, bias=True),
+#             bin(32),
+#             nn.ReLU(True),
+#             ResidualBlock(32, 32),
+#             ResidualBlock(32, 32),
+            
+#         )
+#         self.gamma = nn.Sequential(
+#             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=True),
+#             nn.ReLU(True),
+#         )
+#         self.beta = nn.Sequential(
+#             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=True),
+#             nn.ReLU(True),
+#         )
+
+#     def forward(self, inputs):
+#         output = self.Encoder_Conv(inputs) # batch_size x 512 x 10 x 6
+#         gamma = self.gamma(output)
+#         beta = self.beta(output)
+#         return gamma, beta
+
+
+
+class Content_Style_Encoder(nn.Module):
+    def __init__(self, channels=3):
+        super(Style_Encoder, self).__init__()
+        self.C = nn.Sequential(
+            ResidualBlock(32, 32),
+            ResidualBlock(32, 32),
+            
+        )
+        self.gamma = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ReLU(True),
+        )
+        self.beta = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ReLU(True),
+        )
+
+    def forward(self, inputs):
+        output = self.Encoder_Conv(inputs) # batch_size x 512 x 10 x 6
+        gamma = self.gamma(output)
+        beta = self.beta(output)
+        return gamma, beta
+
+
+
+class Content_Extractor(nn.Module):
+    def __init__(self, ch=64):
+        super(Content_Extractor, self).__init__()
+        # self.Conv = nn.Sequential(
+        #     spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
+        #     nn.ReLU(True),
+        #     spectral_norm(nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=1, bias=True)),
+        #     nn.ReLU(True),
+        # )
+        self.Conv = nn.Sequential(
+            ResidualBlock(ch, ch),
+            ResidualBlock(ch, ch),
+            ResidualBlock(ch, ch),
+            ResidualBlock(ch, ch),
+        )
 
     def forward(self, inputs):
         return self.Conv(inputs)
+
+
+class Content_Generator(nn.Module):
+    def __init__(self):
+        super(Content_Generator, self).__init__()
+        # input: HxW = 65x129
+        self.Decoder_Conv = nn.Sequential(
+            spectral_norm(nn.ConvTranspose2d(2048, 1024, kernel_size=4, stride=2, padding=1, bias=True)), # 130x258
+            nn.ReLU(True),
+            spectral_norm(nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=1, padding=1, bias=True)), # 130x258
+            nn.ReLU(True),
+            spectral_norm(nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1, bias=True)), # 260x516
+            nn.ReLU(True),
+            spectral_norm(nn.ConvTranspose2d(256, 128, kernel_size=3, stride=1, padding=1, bias=True)), # 260x516
+            nn.ReLU(True),
+            spectral_norm(nn.ConvTranspose2d(128, 64, kernel_size=3, stride=1, padding=1, bias=True)), # 260x516
+            nn.ReLU(True),
+        )
+        # self.Decoder_Conv = nn.Sequential(
+        #     spectral_norm(nn.ConvTranspose2d(2048, 512, kernel_size=4, stride=2, padding=1, bias=True)), # 130x258
+        #     nn.ReLU(True),
+        #     spectral_norm(nn.ConvTranspose2d(512, 64, kernel_size=4, stride=2, padding=1, bias=True)), # 260x516
+        #     nn.ReLU(True),
+        #     ResidualBlock(64, 64),
+        #     ResidualBlock(64, 64),
+        # )
+    def forward(self, x):
+        return self.Decoder_Conv(x)
+
+
+# class Content_Encoder(nn.Module):
+#     def __init__(self, n_class, channels=3):
+#         super(Content_Encoder, self).__init__()
+#         self.n_class = n_class
+#         self.conv = nn.Sequential(
+#             nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=True),
+#             nn.ReLU(True),
+#             nn.Conv2d(128, 128, kernel_size=4, stride=2, padding=1, bias=True),
+#             nn.ReLU(True),
+#             ResidualBlock(128, 128),
+#             ResidualBlock(128, 128),
+#             nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1, bias=True),
+#             nn.ReLU(True),
+#             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=True),
+#             nn.ReLU(True),
+#             ResidualBlock(64, 64),
+#             ResidualBlock(64, 64),
+#             nn.InstanceNorm2d(64, affine=False)
+#         )
+    
+#         self.embedding = nn.Conv2d(n_class+1, 64, kernel_size=1)
+
+#     def forward(self, seg):
+#         segmap = F.one_hot(seg.squeeze(1) + 1, num_classes=self.n_class+1).permute(0,3,1,2)
+#         segmap = self.embedding(segmap.float())
+#         return self.conv(segmap)
 
 
 class Class_wise_Separator(nn.Module):
@@ -235,16 +384,18 @@ class Class_wise_Separator(nn.Module):
     """
 
 class StyleEncoder(nn.Module):
-    def __init__(self, n_class, converts, channel):
+    def __init__(self, n_class, datasets, converts, channel=64):
         super(StyleEncoder, self).__init__()
         self.n_class = n_class
         self.channel = channel
         self.converts = converts
-
-        self.FC = nn.Sequential(
-            nn.linear(channel, channel),
-            nn.ReLU(True),
-        )
+        self.datasets = datasets
+        self.FC = dict()
+        for cls in range(n_class + 1):
+            self.FC[str(cls)] = nn.Sequential(
+                nn.Linear(channel, channel),
+                nn.ReLU(True),
+            ).cuda()
         self.conv_gamma = nn.Sequential(
             nn.Conv2d(channel, channel, 3,1,1),
             nn.ReLU(True),
@@ -254,20 +405,22 @@ class StyleEncoder(nn.Module):
             nn.ReLU(True),
         )
 
-    def forward(feature_dict, segmap_dict, opt):
+    def forward(self, feature_dict, segmap_dict):
         mat, gamma, beta = dict(), dict(), dict()
-        b, c, h, w = feature_dict[opt.source].shape
-        for dataset in opt.datasets:
-            rpmat = self.region_wise_pooling(feature_dict[dataset], segmap_dict[dataset])
+        segmap_dict_ = dict()
+        b, c, h, w = feature_dict[self.datasets[0]].shape
+        for dataset in self.datasets:
+            segmap_dict_[dataset] = F.one_hot(segmap_dict[dataset] + 1, num_classes=self.n_class+1).permute(0,3,1,2)
+            segmap_dict_[dataset] = F.interpolate(segmap_dict_[dataset].float(), size=(h,w), mode='nearest')
+            rpmat = self.region_wise_pooling(feature_dict[dataset], segmap_dict_[dataset])
             gpmat = feature_dict[dataset].mean(dim=(2,3)).unsqueeze(1)
-            print(gpmat.shape)
-            m1 = torch.cat((rpmat,gpmat), dim=1)
+            mat[dataset] = torch.cat((rpmat,gpmat), dim=1)  # b * cls * n
             # shape : b*(cls+1)*c
-            n = m1.shape[1] # == cls+1
-            m2 = m1.view(b*n, c)
-            mat[dataset] = self.FC(m2)
+            # n = m1.shape[1] # == cls+1
+            # m1 = m1.view(b*n, c)
+            # mat[dataset] = self.FC(m1).view(b,n,c)
             # broadcasting
-            f = self.broadcasting(segmap_dict[dataset], mat[dataset])
+            f = self.broadcasting(segmap_dict_[dataset], mat[dataset])
             # output shape : b*c*h*w
             gamma[dataset] = self.conv_gamma(f)
             beta[dataset] = self.conv_beta(f)
@@ -275,15 +428,14 @@ class StyleEncoder(nn.Module):
         for convert in self.converts:
             # [G2C, C2G]
             source, target = convert.split('2') # G C
-            f = self.broadcasting(segmap_dict[source], mat[target])
+            f = self.broadcasting(segmap_dict_[source], mat[target])
 
             gamma[convert] = self.conv_gamma(f)
             beta[convert] = self.conv_beta(f)
 
         return gamma, beta
 
-    def broadcasting(segmap, style_code):
-        #TODO : instance-mask segmap
+    def broadcasting(self, segmap, style_code):
         b, cls, h, w = segmap.shape
         c = style_code.shape[-1]
         middle_avg = torch.zeros(b, c, h, w).cuda()
@@ -294,12 +446,13 @@ class StyleEncoder(nn.Module):
 
                 if component_mask_area > 0:
                     middle_mu = style_code[i][j] # c
-                    if middle_mu.sum() != 0:
+                    if middle_mu.sum() != 0 and j != 0:
+                        middle_mu = self.FC[str(j)](middle_mu)
                         component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
-
                         middle_avg[i].masked_scatter_(mask, component_mu) 
                     else:
                         middle_mu = style_code[i][-1]
+                        middle_mu = self.FC[str(0)](middle_mu)
                         component_mu = middle_mu.reshape(c, 1).expand(c, component_mask_area)
 
                         middle_avg[i].masked_scatter_(mask, component_mu) 
@@ -308,7 +461,7 @@ class StyleEncoder(nn.Module):
 
 
     def region_wise_pooling(self, codes, segmap):
-        segmap = F.interpolate(segmap, size=codes.size()[2:], mode='nearest')
+        
 
         b_size = codes.shape[0]
         # h_size = codes.shape[2]
@@ -316,6 +469,7 @@ class StyleEncoder(nn.Module):
         f_size = codes.shape[1]
 
         s_size = segmap.shape[1]
+        """segmap instance """
 
         codes_vector = torch.zeros((b_size, s_size, f_size), dtype=codes.dtype, device=codes.device)
 
@@ -331,24 +485,71 @@ class StyleEncoder(nn.Module):
         return codes_vector
 #////////////////////////////////////////////////////////////////
 
+# class Generator(nn.Module):
+#     def __init__(self):
+#         super(Generator, self).__init__()
+#         self.Decoder_Conv = nn.Sequential(
+#             spectral_norm(nn.ConvTranspose2d(64, 32, kernel_size=3, stride=1, padding=1, bias=True)),
+#             nn.ReLU(True),
+#             ResidualBlock(32, 32),
+#             ResidualBlock(32, 32),
+#             # batch_size x 3 x 1280 x 768
+#             spectral_norm(nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1, bias=True)),
+#             nn.Tanh()
+#         )
+#     def forward(self, x):
+#         return self.Decoder_Conv(x)
+
+
 class Generator(nn.Module):
     def __init__(self):
         super(Generator, self).__init__()
         self.Decoder_Conv = nn.Sequential(
-            spectral_norm(nn.ConvTranspose2d(64, 32, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=1, padding=1, bias=True),
             nn.ReLU(True),
             ResidualBlock(32, 32),
             ResidualBlock(32, 32),
-            # batch_size x 3 x 1280 x 768
-            spectral_norm(nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1, bias=True)),
+            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=1, padding=1, bias=True),
             nn.Tanh()
         )
-    def forward(self, content, style):
-        x = content + style
-        x = self.Decoder_Conv(x)
-        # x = (1. + x) / 2.
-        # x = normalize(x)
-        return x
+    def forward(self, c, s):
+        return self.Decoder_Conv(c+s)
+
+
+
+class CST(nn.Module):
+    def __init__(self, targets, n_class):
+        super(CST, self).__init__()
+        self.embed = nn.ModuleDict()
+        self.conv = nn.ModuleDict()
+        self.R = nn.Sequential(
+            nn.Conv2d(64, 64, kernel_size=4, stride=2, padding=1, bias=True),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1, bias=True),
+            ResidualBlock(128, 128),
+            ResidualBlock(128, 128),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1, bias=True),
+            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1, bias=True),
+        )
+        for target in targets:
+            self.embed[target] = nn.Embedding(n_class+1, 64)
+            self.conv[target] = nn.Conv2d(64, 64, kernel_size=1, stride=1, padding=0, bias=True)
+            
+    def forward(self, style, seg, target):
+        # segmap = F.interpolate((seg+1).unsqueeze(1).float(), size=style.shape[2:], mode='nearest').squeeze(1)
+        # segmap = self.embed[target](segmap.long()).permute(0,3,1,2)
+        # return self.R(self.conv[target](segmap) * style)
+        return self.R(style)
+
+
+class Domain_Normalization_Parameter(nn.Module):
+    def __init__(self, datasets, h, w):
+        super(Domain_Normalization_Parameter, self).__init__()
+        self.w = nn.ParameterDict()
+        for dset in datasets:
+            self.w[dset] = nn.Parameter(torch.ones(1, 64, h//2, w//2), requires_grad=True)
+    
+    def forward(self, x, domain):
+        return self.w[domain] * x
 
 
 class Classifier(nn.Module):
@@ -710,29 +911,84 @@ class FPSE_Discriminator(nn.Module):
         return (pred2, pred3, pred4)
 
 
+class VGG16(nn.Module):
+    def __init__(self):
+        super(VGG16, self).__init__()
+        features = models.vgg16(pretrained=True).features
+        self.to_relu_1_2 = nn.Sequential()
+        self.to_relu_2_2 = nn.Sequential()
+        self.to_relu_3_2 = nn.Sequential()
+        self.to_relu_4_2 = nn.Sequential()
+        for x in range(4):
+            self.to_relu_1_2.add_module(str(x), features[x])
+        for x in range(4,8):
+            self.to_relu_2_2.add_module(str(x), features[x])
+        for x in range(8,13):
+            self.to_relu_3_2.add_module(str(x), features[x])
+        for x in range(13,20):
+            self.to_relu_4_2.add_module(str(x), features[x])
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        h = self.to_relu_1_2(x)
+        # h_relu_1_2 = h
+        h = self.to_relu_2_2(h)
+        # h_relu_2_2 = h
+        h = self.to_relu_3_2(h)
+        # h_relu_3_2 = h
+        # h = self.to_relu_4_2(h)
+        # h_relu_4_2 = h
+        # out = (h_relu_1_2, h_relu_2_2, h_relu_3_2, h_relu_4_2)
+        return h
+
+
 class Perceptual_Discriminator(nn.Module):
-    def __init__(self, channels=3):
+    def __init__(self, n_domain, n_class):
         super(Perceptual_Discriminator, self).__init__()
-        self.Conv = nn.Sequential(
-            # batch_size x 32 x 640 x 384
-            spectral_norm(nn.Conv2d(channels, 64, kernel_size=3, stride=1, padding=1, bias=True)),
+        self.n_class = n_class
+        # CGL block
+        self.CGL = nn.Sequential(
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.GroupNorm(4, 256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(64, 64, kernel_size=4, stride=2, padding=1, bias=True)),
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.GroupNorm(4, 256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=True)),
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.GroupNorm(4, 256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(128, 128, kernel_size=4, stride=2, padding=1, bias=True)),
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.GroupNorm(4, 256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=True)),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1, bias=True)),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),            
-            spectral_norm(nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1, bias=True)),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            spectral_norm(nn.Conv2d(512, 1, kernel_size=1, stride=1, padding=0, bias=True)),
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.GroupNorm(4, 256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
         )
+        
+        # CLC layer
+        self.CLC = nn.Sequential(
+            spectral_norm(nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=True)),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            spectral_norm(nn.Conv2d(256, 1, kernel_size=3, stride=1, padding=1, bias=True)),
+        )
+        # Embedding
+        self.embedding = nn.Conv2d(n_class+1, 256, kernel_size=1)
 
-    def forward(self, inputs):
-        patch_output = self.Conv(inputs)
-        return patch_output
+        self.fc = nn.Sequential(
+            spectral_norm(nn.Linear(16*16*256, 500)),
+            nn.ReLU(True),
+            spectral_norm(nn.Linear(500, n_domain))
+        )
+
+    def forward(self, patches, seg, feature_vgg):
+        feature_CGL = self.CGL(feature_vgg)  # B x 256 x 64 x 64 
+        feature_CLC = self.CLC(feature_CGL)
+        # segmap = F.one_hot(seg.squeeze(1) + 1, num_classes=self.n_class+1).permute(0,3,1,2)
+        # segmap = F.interpolate(segmap.float(), size=feature_CGL.shape[2:], mode='nearest')
+        # segmap = self.embedding(segmap)
+        # patch_out = feature_CLC + segmap * feature_CGL
+        patch_out = feature_CLC
+        fc_out = self.fc(feature_vgg.view(feature_vgg.size(0), -1))
+
+        return (patch_out, fc_out)

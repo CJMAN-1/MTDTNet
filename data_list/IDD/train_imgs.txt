@@ -27,6 +27,11 @@
 /data/datasets/IDD/leftImg8bit/train/175/595035_leftImg8bit.png
 /data/datasets/IDD/leftImg8bit/train/175/120682_leftImg8bit.png
 /data/datasets/IDD/leftImg8bit/train/175/040477_leftImg8bit.png
+/data/datasets/IDD/leftImg8bit/train/175/197480_leftImg8bit.png
+/data/datasets/IDD/leftImg8bit/train/175/974291_leftImg8bit.png
+/data/datasets/IDD/leftImg8bit/train/175/525465_leftImg8bit.png
+/data/datasets/IDD/leftImg8bit/train/175/800125_leftImg8bit.png
+/data/datasets/IDD/leftImg8bit/train/175/739271_leftImg8bit.png
 /data/datasets/IDD/leftImg8bit/train/151/634501_leftImg8bit.png
 /data/datasets/IDD/leftImg8bit/train/151/029583_leftImg8bit.png
 /data/datasets/IDD/leftImg8bit/train/151/306597_leftImg8bit.png

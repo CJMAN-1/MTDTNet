@@ -52,6 +52,7 @@ class Trainer:
             self.best_miou[target] = 0.
         self.n_class = opt.n_class
         self.converts, self.task_converts = set_converts(self.source, self.targets)
+        self.w, self.h = opt.imsize
 
         self.loss_fns = Losses(opt)
 
@@ -109,12 +110,14 @@ class Trainer:
 
     def set_networks(self):
         self.nets['E'] = Encoder()
-        self.nets['CE'] = Content_Encoder(self.n_class)
-        self.nets['SE'] = StyleEncoder(self.n_class, self.datasets, self.converts)
+        # self.nets['CE'] = Content_Encoder(self.n_class)
+        self.nets['SE'] = Encoder_()
+        # self.nets['SE'] = StyleEncoder(self.n_class, self.datasets, self.converts)
         self.nets['G'] = Generator()
-        # self.nets['D'] = Multi_Head_Discriminator(len(self.datasets))
-        self.nets['D'] = Perceptual_Discriminator(len(self.datasets), self.n_class)
-
+        self.nets['D'] = Multi_Head_Discriminator(len(self.datasets))
+        self.nets['FE'] = Feature_Encoder()
+        # self.nets['D'] = Perceptual_Discriminator(len(self.datasets), self.n_class)
+        # self.nets['R'] = ResidualBlock(64, 64)
         # initialization
         if self.opt.load_networks_step is not None:
             self.load_networks(self.opt.load_networks_step)
@@ -131,10 +134,13 @@ class Trainer:
         self.optims['E'] = optim.Adam(self.nets['E'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
-        self.optims['CE'] = optim.Adam(self.nets['CE'].parameters(), lr=self.opt.lr_dra,
+        # self.optims['CE'] = optim.Adam(self.nets['CE'].parameters(), lr=self.opt.lr_dra,
+        #                                         betas=(self.opt.beta1, 0.999),
+        #                                         weight_decay=self.opt.weight_decay)
+        self.optims['SE'] = optim.Adam(self.nets['SE'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
-        self.optims['SE'] = optim.Adam(self.nets['SE'].parameters(), lr=self.opt.lr_dra,
+        self.optims['FE'] = optim.Adam(self.nets['FE'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['G'] = optim.Adam(self.nets['G'].parameters(), lr=self.opt.lr_dra,
@@ -143,6 +149,9 @@ class Trainer:
         self.optims['D'] = optim.Adam(self.nets['D'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
+        # self.optims['R'] = optim.Adam(self.nets['R'].parameters(), lr=self.opt.lr_dra,
+        #                                         betas=(self.opt.beta1, 0.999),
+        #                                         weight_decay=self.opt.weight_decay)
         self.optims['T'] = optim.SGD(self.nets['T'].parameters(), lr=self.opt.lr_seg, momentum=0.9,
                                          weight_decay=self.opt.weight_decay_task)
 
@@ -169,37 +178,31 @@ class Trainer:
 
     def train_dis(self, imgs, labels):  # Train Discriminators(D)
         self.set_zero_grad()
-        features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
-        content_features, gamma, beta= dict(), dict(), dict()
-        perceptual = dict()
+
+        last_feature, content_features, gamma, beta, direct_recon, indirect_recon = dict(), dict(), dict(), dict(), dict(), dict()
+        converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict()
         with torch.no_grad():
             seg[self.source] = labels[self.source]
             for target in self.targets:
-                seg[target] = pred2seg(self.nets['T'](imgs[target]))
-            
-
-            for dset in self.opt.datasets:
-                features[dset] = self.nets['E'](imgs[dset])
-                # content_features[dset] = self.nets['CE'](seg[dset])
-                content_features[dset] = self.nets['CE'](features[dset])
-                perceptual[dset] = self.nets['P'](slice_patches(imgs[dset]))
-
-            gamma, beta = self.nets['SE'](features, seg)
-            
-            
-            #Generator
+                seg[target] = pred2seg(self.nets['T'](imgs[target])[0])
+            for dset in self.datasets:
+                _, last_feature[dset] = self.nets['T'](imgs[dset])  # B x 2048 x 65 x 129
+                content_features[dset] = self.nets['FE'](last_feature[dset])
+                content_features[dset] = F.interpolate(content_features[dset], size=(self.h//2, self.w//2), mode='bilinear')
+                gamma[dset], beta[dset] = self.nets['SE'](imgs[dset])
+            # class-wise style transfer
+            gamma, beta = CST(gamma, beta, seg, self.converts, self.n_class)
             for convert in self.converts:
                 source, target = convert.split('2')
                 converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
-                perceptual[convert] = self.nets['P'](slice_patches(converted_imgs[convert]))
+                # converted_imgs[convert] = self.nets['G'](self.nets['R'](gamma[convert]*content_features[source] + beta[convert]))   
 
         for dset in self.opt.datasets:
-            # D_outputs_real[dset] = self.nets['D'](slice_patches(imgs[dset]))  # Multi-head
-            D_outputs_real[dset] = self.nets['D'](slice_patches(imgs[dset]), slice_patches(seg[dset].unsqueeze(1)), perceptual[dset][2])  # Perceptual
-        
+            D_outputs_real[dset] = self.nets['D'](slice_patches(imgs[dset]))  # Multi-head
+            # D_outputs_real[dset] = self.nets['D'](slice_patches(imgs[dset
         for convert in self.converts:
-            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]), slice_patches(seg[convert[0]].unsqueeze(1)), perceptual[convert][2])
-        
+            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]))
+            # D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]), slice_patches(seg[convert[0]].unsqueeze(1)), perceptual[convert][2])
 
         loss_dis = self.loss_fns.dis_(D_outputs_real, D_outputs_fake)
         loss_dis.backward()
@@ -208,39 +211,33 @@ class Trainer:
 
     def train_task(self, imgs, labels):  # Train Task Networks (T)
         self.set_zero_grad()
-        features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
+        converted_imgs, seg = dict(), dict()
         content_features, gamma, beta= dict(), dict(), dict()
         pred = dict()
+        last_feature = dict()
 
         with torch.no_grad():
             seg[self.source] = labels[self.source]
             for target in self.targets:
-                pred[target] = self.nets['T'](imgs[target])
-                seg[target] = pred2seg(pred[target])
-
-            for dset in self.opt.datasets:
-                features[dset] = self.nets['E'](imgs[dset])
-                # content_features[dset] = self.nets['CE'](seg[dset])
-                content_features[dset] = self.nets['CE'](features[dset])
-
-            gamma, beta = self.nets['SE'](features, seg)
-            
-            #Generator
+                seg[target] = pred2seg(self.nets['T'](imgs[target])[0])
+            for dset in self.datasets:
+                _, last_feature[dset] = self.nets['T'](imgs[dset])  # B x 2048 x 65 x 129
+                content_features[dset] = self.nets['FE'](last_feature[dset])
+                content_features[dset] = F.interpolate(content_features[dset], size=(self.h//2, self.w//2), mode='bilinear')
+                gamma[dset], beta[dset] = self.nets['SE'](imgs[dset])
+            gamma, beta = CST(gamma, beta, seg, self.converts, self.n_class)
             for convert in self.task_converts:
                 source, target = convert.split('2')
                 converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
+                # converted_imgs[convert] = self.nets['G'](self.nets['R'](gamma[convert]*content_features[source] + beta[convert]))
+        
 
         class_weight = class_weight_by_frequency(labels[self.source], self.n_class)
         pred[self.source] = self.nets['T'](imgs[self.source], lbl=labels[self.source], weight=class_weight)
-        loss_seg_src = self.nets['T'].loss_seg
-        loss_task = loss_seg_src
+        loss_task = self.nets['T'].loss_seg
         for convert in self.task_converts:
             pred[convert] = self.nets['T'](converted_imgs[convert], lbl=labels[self.source], weight=class_weight)
-            loss_seg_s2t = self.nets['T'].loss_seg
-            loss_task += loss_seg_s2t
-        for target in self.targets:
-            loss_tgt_ent = self.nets['T'].loss_ent
-            loss_task += 0.05 * loss_tgt_ent
+            loss_task += self.nets['T'].loss_seg
         
         loss_task.backward()
         self.optims['T'].step()
@@ -253,88 +250,83 @@ class Trainer:
         direct_recon_imgs, indirect_recon_imgs = dict(), dict()
         converted_content_features = dict()
         perceptual = dict()
+        last_feature = dict()
 
         seg[self.source] = labels[self.source]
         for target in self.targets:
-            seg[target] = pred2seg(self.nets['T'](imgs[target]))
-        
+            seg[target] = pred2seg(self.nets['T'](imgs[target])[0])
 
-        # direct recon 
-        for dset in self.opt.datasets:
+        for dset in self.datasets:
+            # direct recon
             features[dset] = self.nets['E'](imgs[dset])
             direct_recon_imgs[dset] = self.nets['G'](features[dset])
-            content_features[dset] = self.nets['CE'](features[dset])
-            # content_features[dset] = self.nets['CE'](seg[dset])
-            perceptual[dset] = self.nets['P'](slice_patches(imgs[dset]))
-            
-
-        gamma, beta = self.nets['SE'](features, seg)
-        #Generator
-        # indirect recon
-        for dset in self.opt.datasets:
+            # indirect recon (gamma*content + beta)
+            _, last_feature[dset] = self.nets['T'](imgs[dset])  # B x 2048 x 65 x 129
+            content_features[dset] = self.nets['FE'](last_feature[dset])
+            content_features[dset] = F.interpolate(content_features[dset], size=(self.h//2, self.w//2), mode='bilinear')
+            gamma[dset], beta[dset] = self.nets['SE'](imgs[dset])
             indirect_recon_imgs[dset] = self.nets['G'](gamma[dset]*content_features[dset] + beta[dset])
-
+            # indirect_recon_imgs[dset] = self.nets['G'](self.nets['R'](gamma[dset]*content_features[dset] + beta[dset]))
+        
+        gamma, beta = CST(gamma, beta, seg, self.converts, self.n_class)
         for convert in self.converts:
             source, target = convert.split('2')
             converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
-            perceptual[convert] = self.nets['P'](slice_patches(converted_imgs[convert]))
-
-        
-        for convert in self.converts:
-            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]), slice_patches(seg[convert[0]].unsqueeze(1)), perceptual[convert][2])
-        
-        
-        for convert in self.converts:
-            features[convert] = self.nets['E'](converted_imgs[convert])
-            # converted_content_features[convert] = self.nets['CE'](seg[convert[0]])
-            converted_content_features[convert] = self.nets['CE'](features[convert])
+            # converted_imgs[convert] = self.nets['G'](self.nets['R'](gamma[convert]*content_features[source] + beta[convert]))
+            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]))
+            _, last_feature[convert] = self.nets['T'](converted_imgs[convert])
+            converted_content_features[convert] = self.nets['FE'](last_feature[convert])
+            converted_content_features[convert] = F.interpolate(converted_content_features[convert], size=(self.h//2, self.w//2), mode='bilinear')
        
         G_loss = self.loss_fns.gen_(D_outputs_fake)
         Recon_loss = self.loss_fns.recon(imgs, direct_recon_imgs) + self.loss_fns.recon(imgs, indirect_recon_imgs)
         Consis_loss = 0.
-        Style_loss = self.loss_fns.region_wise_style_loss(self.nets['P'], seg, imgs, converted_imgs)
+        # Style_loss = self.loss_fns.region_wise_style_loss(self.nets['P'], seg, imgs, converted_imgs)
         for convert in self.converts:
             source, target = convert.split('2')
             Consis_loss += self.loss_fns.recon_single(content_features[source], converted_content_features[convert])
 
-        loss_esg = G_loss + Recon_loss + Consis_loss + Style_loss
+        loss_esg = G_loss + Recon_loss + Consis_loss # + Style_loss
         loss_esg.backward()
-        for net in ['E', 'CE', 'SE', 'G']:
+        for net in ['E', 'FE', 'SE', 'G', 'T']:
             self.optims[net].step()
         self.losses['G'] = G_loss.data.item()
         self.losses['R'] = Recon_loss.data.item()
         self.losses['C'] = Consis_loss.data.item()
-        self.losses['S'] = Style_loss.data.item()
+        # self.losses['S'] = Style_loss.data.item()
 
     def tensor_board_log(self, imgs, labels):
         nrow = 2
         with torch.no_grad():
-            features, converted_imgs, seg = dict(), dict(), dict()
+            features, converted_imgs, D_outputs_fake, seg = dict(), dict(), dict(), dict()
             content_features, gamma, beta= dict(), dict(), dict()
             direct_recon_imgs, indirect_recon_imgs = dict(), dict()
+            converted_content_features = dict()
+            perceptual = dict()
+            last_feature = dict()
 
             seg[self.source] = labels[self.source]
             for target in self.targets:
-                seg[target] = pred2seg(self.nets['T'](imgs[target]))
-            
-            # direct recon 
-            for dset in self.opt.datasets:
+                seg[target] = pred2seg(self.nets['T'](imgs[target])[0])
+
+            for dset in self.datasets:
+                # direct recon
                 features[dset] = self.nets['E'](imgs[dset])
                 direct_recon_imgs[dset] = self.nets['G'](features[dset])
-                content_features[dset] = self.nets['CE'](features[dset])
-                # content_features[dset] = self.nets['CE'](seg[dset])
-
-            gamma, beta = self.nets['SE'](features, seg)
-            
-            
-            #Generator
-            # indirect recon
-            for dset in self.opt.datasets:
+                # indirect recon (gamma*content + beta)
+                _, last_feature[dset] = self.nets['T'](imgs[dset])  # B x 2048 x 65 x 129
+                content_features[dset] = self.nets['FE'](last_feature[dset])
+                content_features[dset] = F.interpolate(content_features[dset], size=(self.h//2, self.w//2), mode='bilinear')
+                gamma[dset], beta[dset] = self.nets['SE'](imgs[dset])
                 indirect_recon_imgs[dset] = self.nets['G'](gamma[dset]*content_features[dset] + beta[dset])
-
+                # indirect_recon_imgs[dset] = self.nets['G'](self.nets['R'](gamma[dset]*content_features[dset] + beta[dset]))
+            
+            gamma, beta = CST(gamma, beta, seg, self.converts, self.n_class)
             for convert in self.converts:
                 source, target = convert.split('2')
                 converted_imgs[convert] = self.nets['G'](gamma[convert]*content_features[source] + beta[convert])
+                # converted_imgs[convert] = self.nets['G'](self.nets['R'](gamma[convert]*content_features[source] + beta[convert]))
+                
 
         # Input Images & Recon Images
         for dset in self.opt.datasets:
@@ -364,7 +356,8 @@ class Trainer:
             x = decode_labels(labels[dset].detach(), num_images=self.opt.batch)
             x = vutils.make_grid(x, normalize=True, scale_each=False, nrow=nrow)
             self.writer.add_image('4_Segmentation/1_GT_%s' % dset, x, self.step)
-            preds[dset] = self.nets['T'](imgs[dset])
+            with torch.no_grad():
+                preds[dset], _ = self.nets['T'](imgs[dset])
 
         for key in preds.keys():
             pred = preds[key].data.cpu().numpy()
@@ -389,7 +382,7 @@ class Trainer:
                 if self.opt.cuda:
                     imgs, labels = imgs.cuda(), labels.cuda()
                 labels = labels.long()
-                pred = self.nets['T'](imgs)
+                pred, _ = self.nets['T'](imgs)
                 pred = pred.data.cpu().numpy()
                 pred = np.argmax(pred, axis=1)
                 gt = labels.data.cpu().numpy()
@@ -420,9 +413,9 @@ class Trainer:
             _, target = convert.split('2')
             best_mious += (convert + ': ' + '%.2f'%self.best_miou[target] + '|' )
         self.logger.info(
-            '[%d/%d] D: %.2f| G: %.2f| R: %.2f| C: %.2f| S: %.2f| T: %.2f| %s %s'
+            '[%d/%d] D: %.2f| G: %.2f| R: %.2f| C: %.2f| T: %.2f| %s %s'
             % (self.step, self.opt.iter,
-               self.losses['D'], self.losses['G'], self.losses['R'], self.losses['C'], self.losses['S'], self.losses['T'], best_mious, self.opt.ex))
+               self.losses['D'], self.losses['G'], self.losses['R'], self.losses['C'], self.losses['T'], best_mious, self.opt.ex))
 
     def train(self):
         self.set_default()
@@ -450,10 +443,9 @@ class Trainer:
                 for dset in self.opt.datasets:
                     imgs[dset], labels[dset] = imgs[dset][:min_batch], labels[dset][:min_batch]
             # training
-            # print(F.one_hot(labels['G']+1, num_classes=self.n_class+1).size())  # b x h x w x class
-            # print(labels['G'].size())
+            
             self.train_dis(imgs, labels)
-            for esg in range(3):
+            for esg in range(2):
                 self.train_esg(imgs, labels)
             self.train_task(imgs, labels)
             # tensorboard

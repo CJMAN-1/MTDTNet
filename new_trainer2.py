@@ -110,7 +110,8 @@ class Trainer:
     def set_networks(self):
         self.nets['E'] = Encoder()
         self.nets['CE'] = Content_Encoder(self.n_class)
-        self.nets['SE'] = StyleEncoder(self.n_class, self.datasets, self.converts)
+        self.nets['SE'] = Encoder()
+        self.nets['SE2'] = StyleEncoder(self.n_class, self.datasets, self.converts)
         self.nets['G'] = Generator()
         # self.nets['D'] = Multi_Head_Discriminator(len(self.datasets))
         self.nets['D'] = Perceptual_Discriminator(len(self.datasets), self.n_class)
@@ -135,6 +136,9 @@ class Trainer:
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['SE'] = optim.Adam(self.nets['SE'].parameters(), lr=self.opt.lr_dra,
+                                                betas=(self.opt.beta1, 0.999),
+                                                weight_decay=self.opt.weight_decay)
+        self.optims['SE2'] = optim.Adam(self.nets['SE2'].parameters(), lr=self.opt.lr_dra,
                                                 betas=(self.opt.beta1, 0.999),
                                                 weight_decay=self.opt.weight_decay)
         self.optims['G'] = optim.Adam(self.nets['G'].parameters(), lr=self.opt.lr_dra,
@@ -172,6 +176,7 @@ class Trainer:
         features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
         content_features, gamma, beta= dict(), dict(), dict()
         perceptual = dict()
+        style_features = dict()
         with torch.no_grad():
             seg[self.source] = labels[self.source]
             for target in self.targets:
@@ -183,8 +188,9 @@ class Trainer:
                 # content_features[dset] = self.nets['CE'](seg[dset])
                 content_features[dset] = self.nets['CE'](features[dset])
                 perceptual[dset] = self.nets['P'](slice_patches(imgs[dset]))
+                style_features[dset] = self.nets['SE'](imgs[dset])
 
-            gamma, beta = self.nets['SE'](features, seg)
+            gamma, beta = self.nets['SE2'](style_features, seg)
             
             
             #Generator
@@ -211,6 +217,7 @@ class Trainer:
         features, converted_imgs, D_outputs_fake, D_outputs_real, seg = dict(), dict(), dict(), dict(), dict()
         content_features, gamma, beta= dict(), dict(), dict()
         pred = dict()
+        style_features = dict()
 
         with torch.no_grad():
             seg[self.source] = labels[self.source]
@@ -222,8 +229,9 @@ class Trainer:
                 features[dset] = self.nets['E'](imgs[dset])
                 # content_features[dset] = self.nets['CE'](seg[dset])
                 content_features[dset] = self.nets['CE'](features[dset])
+                style_features[dset] = self.nets['SE'](imgs[dset])
 
-            gamma, beta = self.nets['SE'](features, seg)
+            gamma, beta = self.nets['SE2'](style_features, seg)
             
             #Generator
             for convert in self.task_converts:
@@ -253,6 +261,7 @@ class Trainer:
         direct_recon_imgs, indirect_recon_imgs = dict(), dict()
         converted_content_features = dict()
         perceptual = dict()
+        style_features = dict()
 
         seg[self.source] = labels[self.source]
         for target in self.targets:
@@ -266,9 +275,10 @@ class Trainer:
             content_features[dset] = self.nets['CE'](features[dset])
             # content_features[dset] = self.nets['CE'](seg[dset])
             perceptual[dset] = self.nets['P'](slice_patches(imgs[dset]))
+            style_features[dset] = self.nets['SE'](imgs[dset])
             
 
-        gamma, beta = self.nets['SE'](features, seg)
+        gamma, beta = self.nets['SE2'](style_features, seg)
         #Generator
         # indirect recon
         for dset in self.opt.datasets:
@@ -299,7 +309,7 @@ class Trainer:
 
         loss_esg = G_loss + Recon_loss + Consis_loss + Style_loss
         loss_esg.backward()
-        for net in ['E', 'CE', 'SE', 'G']:
+        for net in ['E', 'CE', 'SE', 'SE2', 'G', 'T']:
             self.optims[net].step()
         self.losses['G'] = G_loss.data.item()
         self.losses['R'] = Recon_loss.data.item()
@@ -312,6 +322,7 @@ class Trainer:
             features, converted_imgs, seg = dict(), dict(), dict()
             content_features, gamma, beta= dict(), dict(), dict()
             direct_recon_imgs, indirect_recon_imgs = dict(), dict()
+            style_features = dict()
 
             seg[self.source] = labels[self.source]
             for target in self.targets:
@@ -323,8 +334,9 @@ class Trainer:
                 direct_recon_imgs[dset] = self.nets['G'](features[dset])
                 content_features[dset] = self.nets['CE'](features[dset])
                 # content_features[dset] = self.nets['CE'](seg[dset])
+                style_features[dset] = self.nets['SE'](imgs[dset])
 
-            gamma, beta = self.nets['SE'](features, seg)
+            gamma, beta = self.nets['SE2'](style_features, seg)
             
             
             #Generator

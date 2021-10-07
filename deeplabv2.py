@@ -153,34 +153,54 @@ class ResNet101(nn.Module):
     def _make_pred_layer(self, block, inplanes, dilation_series, padding_series, num_classes):
         return block(inplanes, dilation_series, padding_series, num_classes)
 
-    def forward(self, x, lbl=None, weight=None, ita=1.5):
-        _, _, h, w = x.size()
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.layer5(x)
+    def forward(self, x, lbl=None, weight=None, ita=1.5, from_layer1 = False):
+        feature = None
+        # features = []
+        if from_layer1:
+            h, w = 512, 1024
+            x = self.layer1(x)
+            # features.append(x)
+            x = self.layer2(x)
+            # features.append(x)
+            x = self.layer3(x)
+            # features.append(x)
+            x = self.layer4(x)
+            # features.append(x)
+            x = self.layer5(x)
+        else:
+            _, _, h, w = x.size()
+            x = self.conv1(x)
+            x = self.bn1(x)
+            x = self.relu(x)
+            x = self.maxpool(x)
+            feature = x
+            # features.append(x)
+            x = self.layer1(x)
+            # features.append(x)
+            x = self.layer2(x)
+            # features.append(x)
+            x = self.layer3(x)
+            # features.append(x)
+            x = self.layer4(x)
+            # features.append(x)
+            x = self.layer5(x)
 
         if self.phase == 'train':
-            P = F.softmax(x, dim=1)        # [B, 19, H, W]
-            logP = F.log_softmax(x, dim=1) # [B, 19, H, W]
-            PlogP = P * logP               # [B, 19, H, W]
-            ent = -1.0 * PlogP.sum(dim=1)  # [B, 1, H, W]
-            ent = ent / 2.9444         # chanage when classes is not 19
-            # compute robust entropy
-            ent = ent ** 2.0 + 1e-8
-            ent = ent ** ita
-            self.loss_ent = ent.mean()
+            # P = F.softmax(x, dim=1)        # [B, 19, H, W]
+            # logP = F.log_softmax(x, dim=1) # [B, 19, H, W]
+            # PlogP = P * logP               # [B, 19, H, W]
+            # ent = -1.0 * PlogP.sum(dim=1)  # [B, 1, H, W]
+            # ent = ent / 2.9444         # chanage when classes is not 19
+            # # compute robust entropy
+            # ent = ent ** 2.0 + 1e-8
+            # ent = ent ** ita
+            # self.loss_ent = ent.mean()
 
             x = nn.functional.interpolate(x, size=(h, w), mode='bilinear', align_corners=True)
             if lbl is not None:
                 self.loss_seg = self.CrossEntropy2d(x, lbl, weight=weight)
 
-        return x
+        return x, feature
 
     def get_1x_lr_params_NOscale(self):
 
