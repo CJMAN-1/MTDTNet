@@ -1044,6 +1044,7 @@ class SWAEEncoder(nn.Module):
         self.netE_nc_steepness = 2.0
         self.netE_scale_capacity = 1.0
         self.spatial_code_ch = 8
+        self.global_code_ch = 2048
 
         # If antialiasing is used, create a very lightweight Gaussian kernel.
         blur_kernel = [1, 2, 1]# if self.opt.use_antialias else [1]
@@ -1119,56 +1120,90 @@ class SWAEEncoder(nn.Module):
             return sp, gl
 
 class SWAEDecoder(nn.Module):
+    """ The Generator (decoder) architecture described in Figure 18 of
+        Swapping Autoencoder (https://arxiv.org/abs/2007.00653).
+        
+        At high level, the architecture consists of regular and 
+        upsampling residual blocks to transform the structure code into an RGB
+        image. The global code is applied at each layer as modulation.
+        
+        Here's more detailed architecture:
+        
+        1. SpatialCodeModulation: First of all, modulate the structure code 
+        with the global code.
+        2. HeadResnetBlock: resnets at the resolution of the structure code,
+        which also incorporates modulation from the global code.
+        3. UpsamplingResnetBlock: resnets that upsamples by factor of 2 until
+        the resolution of the output RGB image, along with the global code
+        modulation.
+        4. ToRGB: Final layer that transforms the output into 3 channels (RGB).
+        
+        Each components of the layers borrow heavily from StyleGAN2 code,
+        implemented by Seonghyeon Kim.
+        https://github.com/rosinality/stylegan2-pytorch
+    """
     def __init__(self):
         super().__init__()
-        self.n_up = 3
-        self.n_resblock = 2
-        nc_content = 512
-        nc_style = 2048
-        blur_kernel = [1, 3, 3, 1]  # 원본 코드 : blur_kernel = [1, 3, 3, 1] if opt.use_antialias else [1]
-        # content modulation(AdaIn)
-        self.ContentModulation = GeneratorModulation(nc_style, nc_content)
+        self.netG_scale_capacity = 1.0
+        self.netG_num_base_resnet_layers = 2
+        self.netG_resnet_ch = 256
+        self.netE_num_downsampling_sp = 4
+        self.num_classes = 0
+        self.global_code_ch = 2048
+        self.spatial_code_ch = 8
 
-        # content modulation(Res)
-        in_channel = nc_content
-        for i in range(self.n_resblock):
+        num_upsamplings = self.netE_num_downsampling_sp
+        blur_kernel = [1, 3, 3, 1]# if opt.use_antialias else [1]
+
+        self.global_code_ch = self.global_code_ch + self.num_classes
+
+        self.add_module(
+            "SpatialCodeModulation",
+            GeneratorModulation(self.global_code_ch, self.spatial_code_ch))
+
+        in_channel = self.spatial_code_ch
+        for i in range(self.netG_num_base_resnet_layers):
             # gradually increase the number of channels
-            #out_channel = (i + 1) / n_resblock * self.nf(0)
-            out_channel = nc_content#max(nc_content, round(out_channel))
+            out_channel = (i + 1) / self.netG_num_base_resnet_layers * self.nf(0)
+            out_channel = max(self.spatial_code_ch, round(out_channel))
             layer_name = "HeadResnetBlock%d" % i
             new_layer = ResolutionPreservingResnetBlock(
-                in_channel, out_channel, nc_style)
+                in_channel, out_channel, self.global_code_ch)
             self.add_module(layer_name, new_layer)
             in_channel = out_channel
 
-        # upsampling with modulation
-        for j in range(self.n_up):
+        for j in range(num_upsamplings):
             out_channel = self.nf(j + 1)
             layer_name = "UpsamplingResBlock%d" % (2 ** (4 + j))
             new_layer = UpsamplingResnetBlock(
-                in_channel, out_channel, nc_style,
-                blur_kernel)
+                in_channel, out_channel, self.global_code_ch,
+                blur_kernel, False)
             self.add_module(layer_name, new_layer)
             in_channel = out_channel
-        # ToRGB
-        self.ToRGB = ToRGB(out_channel, nc_style,
+
+        last_layer = ToRGB(out_channel, self.global_code_ch,
                            blur_kernel=blur_kernel)
-        
+        self.add_module("ToRGB", last_layer)
 
-    def forward(self, content, style):
-        content = normalize(content)
-        style = normalize(style)
+    def nf(self, num_up):
+        ch = 128 * (2 ** (self.netE_num_downsampling_sp - num_up))
+        ch = int(min(512, ch) * self.netG_scale_capacity)
+        return ch
 
-        x = self.ContentModulation(content, style)
-        for i in range(self.n_resblock):
+    def forward(self, spatial_code, global_code):
+        spatial_code = normalize(spatial_code)
+        global_code = normalize(global_code)
+
+        x = self.SpatialCodeModulation(spatial_code, global_code)
+        for i in range(self.netG_num_base_resnet_layers):
             resblock = getattr(self, "HeadResnetBlock%d" % i)
-            x = resblock(x, style)
+            x = resblock(x, global_code)
 
-        for j in range(self.n_up):
+        for j in range(self.netE_num_downsampling_sp):
             key_name = 2 ** (4 + j)
             upsampling_layer = getattr(self, "UpsamplingResBlock%d" % key_name)
-            x = upsampling_layer(x, style)
-        rgb = self.ToRGB(x, style, None)
+            x = upsampling_layer(x, global_code)
+        rgb = self.ToRGB(x, global_code, None)
 
         return rgb
 
@@ -1366,7 +1401,7 @@ class UpsamplingResnetBlock(torch.nn.Module):
         return (skip + res) / math.sqrt(2)
 
 class ResolutionPreservingResnetBlock(torch.nn.Module):
-    def __init__(self, opt, inch, outch, styledim):
+    def __init__(self, inch, outch, styledim):
         super().__init__()
         self.conv1 = StyledConv(inch, outch, 3, styledim, upsample=False)
         self.conv2 = StyledConv(outch, outch, 3, styledim, upsample=False)
