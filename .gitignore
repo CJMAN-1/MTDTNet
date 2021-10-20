@@ -8,3 +8,4 @@ __pycache__
 sync_batchnorm/__pycache__
 dataloader/__pycache__
 *.swp
+.vscode
