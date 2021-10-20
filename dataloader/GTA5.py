@@ -19,7 +19,8 @@ class GTA5(Cityscapes):
                  split='train',
                  crop_size=(1024, 512),
                  train=True,
-                 numpy_transform=False
+                 numpy_transform=False,
+                 super_class=False
                  ):
 
         self.list_path = list_path
@@ -39,9 +40,15 @@ class GTA5(Cityscapes):
         self.labels = [id.strip() for id in open(label_list_filepath)]
 
         ignore_label = -1
-        self.id_to_trainid = {7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5,
-                              19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12,
-                              26: 13, 27: 14, 28: 15, 31: 16, 32: 17, 33: 18}
+        if super_class:
+            self.id_to_trainid = {7: 0, 8: 0, 11: 1, 12: 1, 13: 1, 17: 2,
+                              19: 2, 20: 2, 21: 3, 22: 3, 23: 4, 24: 5, 25: 5,
+                              26: 6, 27: 6, 28: 6, 31: 6, 32: 6, 33: 6}
+        else:
+            self.id_to_trainid = {7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5,
+                                19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12,
+                                26: 13, 27: 14, 28: 15, 31: 16, 32: 17, 33: 18}
+        
 
         print("{} num images in GTA5 {} set have been loaded.".format(len(self.images), self.split))
 

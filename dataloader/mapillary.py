@@ -13,13 +13,14 @@ from .Cityscapes import Cityscapes
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-class mapillary(Cityscapes):
+class Mapillary(Cityscapes):
     def __init__(self,
                  list_path='./data_list/mapillary',
                  split='train',
                  crop_size=(1024, 512),
                  train=True,
-                 numpy_transform=False
+                 numpy_transform=False,
+                 super_class=False
                  ):
 
         self.list_path = list_path
@@ -38,12 +39,27 @@ class mapillary(Cityscapes):
         self.images = [id.strip() for id in open(image_list_filepath)]
         self.labels = [id.strip() for id in open(label_list_filepath)]
 
-        ignore_label = -1
-        self.id_to_trainid = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5,
-                              6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11, 12: 12,
-                              13: 13, 14: 14, 15: 15, 16: 16, 17: 17, 18: 18}
+        # ignore_label = -1
+        if super_class:
+            self.id_to_trainid = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 7: 0, 9: 0, 10: 0, 
+                                  11: 0, 12: 0, 37: 1, 38: 1, 39: 1, 40: 1, 41: 1, 
+                                  45: 1, 47: 1, 51: 1, 52: 2, 54: 7, 55: 2, 56: 2, 
+                                  57: 2, 58: 2, 65: 7, 70: 2, 74: 7, 75: 7, 80: 7, 
+                                  82: 7, 87: 2, 90: 7, 91: 7, 92: 2, 93: 7, 94: 7, 
+                                  95: 2, 97: 2, 103: 7, 104: 3, 105: 4, 106: 0, 
+                                  111: 6, 112: 6, 113: 6, 114: 6, 115: 6}
+        else:
+            # TODO : generate 19 class matching dict
+            self.id_to_trainid = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 7: 0, 9: 0, 10: 0, 
+                                  11: 0, 12: 0, 37: 1, 38: 1, 39: 1, 40: 1, 41: 1, 
+                                  45: 1, 47: 1, 51: 1, 52: 2, 54: 7, 55: 2, 56: 2, 
+                                  57: 2, 58: 2, 65: 7, 70: 2, 74: 7, 75: 7, 80: 7, 
+                                  82: 7, 87: 2, 90: 7, 91: 7, 92: 2, 93: 7, 94: 7, 
+                                  95: 2, 97: 2, 103: 7, 104: 3, 105: 4, 106: 0, 
+                                  111: 6, 112: 6, 113: 6, 114: 6, 115: 6}
+        
 
-        print("{} num images in GTA5 {} set have been loaded.".format(len(self.images), self.split))
+        print("{} num images in mapillary {} set have been loaded.".format(len(self.images), self.split))
 
     def __getitem__(self, item):
 

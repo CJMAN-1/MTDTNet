@@ -20,8 +20,9 @@ def get_params():
 
     ## Common Parameters ##
     parser.add_argument('--datasets', type=str, nargs='+', required=True, help='G/C/S (GTA5/Cityscapes/Synthia)')
-    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--workers', type=int, default=0)
     parser.add_argument('--n_class', type=int, default=19)
+    parser.add_argument('--super_class', type=bool, default=False)
     parser.add_argument('--batch', type=int, default=2, help='batch size')
     parser.add_argument('--imsize', default=(1024, 512), help='the height of the input image to networks')
     parser.add_argument('--iter', type=int, default=10000000, help='number of iterations to train for')
@@ -51,7 +52,7 @@ def get_params():
     check_dirs(['checkpoint/' + opt.ex])
     opt.logfile = './checkpoint/' + opt.ex + '/' + opt.ex + '.log'
     check_dirs(['data_list/GTA5', 'data_list/Cityscapes'])
-    make_list()
+    # make_list()
     if opt.manualSeed is None:
         opt.manualSeed = random.randint(1, 10000)
     return opt
