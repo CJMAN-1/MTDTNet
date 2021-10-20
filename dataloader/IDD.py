@@ -46,7 +46,8 @@ class IDD(data.Dataset):
                  split='train',
                  crop_size=(1024, 512),
                  train=True,
-                 numpy_transform=False
+                 numpy_transform=False,
+                 super_class=False
                  ):
         self.list_path = list_path
         self.split = split
@@ -65,46 +66,90 @@ class IDD(data.Dataset):
 
 
         ignore_label = -1
-        self.id_to_trainid = {0: 10,
+        if super_class:
+            self.id_to_trainid = {0: 4,
                               1: 0, #road
-                              2: ignore_label,
-                              3: 1, #sidewalk
-                              4: 2, 
-                              5: 3, 
-                              6: 8,    #vegatation?
-                              7: 4,    #fence 
-                              8: ignore_label, 
-                              9: ignore_label, 
-                              10: 5, 
-                              11: 12, 
-                              12: 14, 
-                              13: ignore_label, 
-                              14: ignore_label, 
-                              15: 17, 
-                              16: 11, 
-                              17: 15,
-                              18: 13,
-                              19: 18, 
-                              20: ignore_label, 
-                              21: 9, 
-                              22: ignore_label, 
-                              23: 7, 
-                              24: ignore_label, 
-                              25: 6, 
-                              26: ignore_label, 
-                              27: ignore_label, 
-                              28: ignore_label, 
-                              29: ignore_label, 
-                              30: ignore_label, 
-                              31: ignore_label, 
-                              32: ignore_label, 
-                              33: ignore_label, 
-                              34: 16, 
-                              35: ignore_label, 
-                              36: ignore_label, 
-                              37: ignore_label, 
-                              38: ignore_label, 
-                              39: ignore_label}
+                              2: 0, #drivable fallback
+                              3: 0, #sidewalk
+                              4: 1, #building
+                              5: 1, #wall
+                              6: 3,    #vegatation?
+                              7: 1,    #fence 
+                              8: ignore_label, #obs-str-bar-fallback
+                              9: 1, #curb
+                              10: 2, #pole
+                              11: 5, #rider
+                              12: 6, #truck
+                              13: 6, #autorickshaw
+                              14: 2, #billboard
+                              15: 6, #motorcycle
+                              16: 5, #person
+                              17: 6, #bus
+                              18: 6, #car
+                              19: 6, #bicycle
+                              20: 6, #vehiclefallback 
+                              21: ignore_label, #non-drivable fallback
+                              22: ignore_label, #fallback background
+                              23: 2, # traffic sign
+                              24: ignore_label, #animal
+                              25: 2, #traffic light
+                              26: ignore_label, #polegroup
+                              27: ignore_label, #bridge
+                              28: 6, #caravan
+                              29: ignore_label, #parking
+                              30: 6, #trailer
+                              31: ignore_label, #guard rail
+                              32: ignore_label, #rectification border
+                              33: ignore_label, #ort of roi
+                              34: 6, #train
+                              35: ignore_label, #rail track
+                              36: ignore_label, #tunnel
+                              37: ignore_label, #license plate
+                              38: ignore_label, #ground
+                              39: ignore_label} #ego vehicle 
+        else:
+            self.id_to_trainid = {0: 10,
+                                1: 0, #road
+                                2: ignore_label,
+                                3: 1, #sidewalk
+                                4: 2, 
+                                5: 3, 
+                                6: 8,    #vegatation?
+                                7: 4,    #fence 
+                                8: ignore_label, 
+                                9: ignore_label, 
+                                10: 5, 
+                                11: 12, 
+                                12: 14, 
+                                13: ignore_label, 
+                                14: ignore_label, 
+                                15: 17, 
+                                16: 11, 
+                                17: 15,
+                                18: 13,
+                                19: 18, 
+                                20: ignore_label, 
+                                21: 9, 
+                                22: ignore_label, 
+                                23: 7, 
+                                24: ignore_label, 
+                                25: 6, 
+                                26: ignore_label, 
+                                27: ignore_label, 
+                                28: ignore_label, 
+                                29: ignore_label, 
+                                30: ignore_label, 
+                                31: ignore_label, 
+                                32: ignore_label, 
+                                33: ignore_label, 
+                                34: 16, 
+                                35: ignore_label, 
+                                36: ignore_label, 
+                                37: ignore_label, 
+                                38: ignore_label, 
+                                39: ignore_label}
+        
+        
 
         # self.id_to_trainid = {0: 0, #sky?
         #                       1: ignore_label, 

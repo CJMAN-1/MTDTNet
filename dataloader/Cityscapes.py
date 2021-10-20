@@ -16,29 +16,53 @@ NUM_CLASSES = 19
 
 # colour map
 label_colours = [
-    # [  0,   0,   0],
-    [128, 64, 128],
-    [244, 35, 232],
-    [70, 70, 70],
-    [102, 102, 156],
-    [190, 153, 153],
-    [153, 153, 153],
-    [250, 170, 30],
-    [220, 220, 0],
-    [107, 142, 35],
-    [152, 251, 152],
-    [0, 130, 180],
-    [220, 20, 60],
-    [255, 0, 0],
-    [0, 0, 142],
-    [0, 0, 70],
-    [0, 60, 100],
-    [0, 80, 100],
-    [0, 0, 230],
-    [119, 11, 32],
-    [0, 0, 0]]  # the color of ignored label(-1)
+# [  0,   0,   0],
+[128, 64, 128],
+[244, 35, 232],
+[70, 70, 70],
+[102, 102, 156],
+[190, 153, 153],
+[153, 153, 153],
+[250, 170, 30],
+[220, 220, 0],
+[107, 142, 35],
+[152, 251, 152],
+[0, 130, 180],
+[220, 20, 60],
+[255, 0, 0],
+[0, 0, 142],
+[0, 0, 70],
+[0, 60, 100],
+[0, 80, 100],
+[0, 0, 230],
+[119, 11, 32],
+[0, 0, 0]]  # the color of ignored label(-1)
 label_colours = list(map(tuple, label_colours))
 
+# colour map
+super_label_colours = [
+# [  0,   0,   0],
+[128, 64, 128],
+# [244, 35, 232],
+[70, 70, 70],
+# [102, 102, 156],
+# [190, 153, 153],
+# [153, 153, 153],
+# [250, 170, 30],
+[220, 220, 0],
+[107, 142, 35],
+# [152, 251, 152],
+[0, 130, 180],
+[220, 20, 60],
+# [255, 0, 0],
+[0, 0, 142],
+# [0, 0, 70],
+# [0, 60, 100],
+# [0, 80, 100],
+# [0, 0, 230],
+# [119, 11, 32],
+[0, 0, 0]]  # the color of ignored label(-1)
+super_label_colours = list(map(tuple, super_label_colours))
 
 class Cityscapes(data.Dataset):
     def __init__(self,
@@ -46,7 +70,8 @@ class Cityscapes(data.Dataset):
                  split='train',
                  crop_size=(1024, 512),
                  train=True,
-                 numpy_transform=False
+                 numpy_transform=False,
+                 super_class=False
                  ):
         self.list_path = list_path
         self.split = split
@@ -64,18 +89,30 @@ class Cityscapes(data.Dataset):
         self.labels = [id.strip() for id in open(label_list_filepath)]
 
         ignore_label = -1
-        self.id_to_trainid = {-1: ignore_label, 0: ignore_label, 1: ignore_label, 2: ignore_label,
-                              3: ignore_label, 4: ignore_label, 5: ignore_label, 6: ignore_label,
-                              7: 0, 8: 1, 9: ignore_label, 10: ignore_label, 11: 2, 12: 3, 13: 4,
-                              14: ignore_label, 15: ignore_label, 16: ignore_label, 17: 5,
-                              18: ignore_label, 19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
-                              28: 15, 29: ignore_label, 30: ignore_label, 31: 16, 32: 17, 33: 18}
+        if super_class:
+            self.id_to_trainid = {-1: ignore_label, 0: ignore_label, 1: ignore_label, 2: ignore_label,
+                                3: ignore_label, 4: ignore_label, 5: ignore_label, 6: ignore_label,
+                                7: 0, 8: 0, 9: ignore_label, 10: ignore_label, 11: 1, 12: 1, 13: 1,
+                                14: ignore_label, 15: ignore_label, 16: ignore_label, 17: 2,
+                                18: ignore_label, 19: 2, 20: 2, 21: 3, 22: 3, 23: 4, 24: 5, 25: 5, 26: 6, 27: 6,
+                                28: 6, 29: ignore_label, 30: ignore_label, 31: 6, 32: 6, 33: 6}
+            
+        else:
+            self.id_to_trainid = {-1: ignore_label, 0: ignore_label, 1: ignore_label, 2: ignore_label,
+                                3: ignore_label, 4: ignore_label, 5: ignore_label, 6: ignore_label,
+                                7: 0, 8: 1, 9: ignore_label, 10: ignore_label, 11: 2, 12: 3, 13: 4,
+                                14: ignore_label, 15: ignore_label, 16: ignore_label, 17: 5,
+                                18: ignore_label, 19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+                                28: 15, 29: ignore_label, 30: ignore_label, 31: 16, 32: 17, 33: 18}
+            
+        
 
         print("{} num images in Cityscapes {} set have been loaded.".format(len(self.images), self.split))
         if self.numpy_transform:
             print("use numpy_transform, instead of tensor transform!")
 
     def id2trainId(self, label, reverse=False, ignore_label=-1):
+        
         label_copy = ignore_label * np.ones(label.shape, dtype=np.float32)
         for k, v in self.id_to_trainid.items():
             label_copy[label == k] = v
@@ -150,7 +187,7 @@ class Cityscapes(data.Dataset):
         return len(self.images)
 
 
-def decode_labels(mask, num_images=1, num_classes=NUM_CLASSES):
+def decode_labels(mask, num_images=1, num_classes=NUM_CLASSES, super_class=False):
     """Decode batch of segmentation masks.
 
     Args:
@@ -173,7 +210,10 @@ def decode_labels(mask, num_images=1, num_classes=NUM_CLASSES):
         for j_, j in enumerate(mask[i, :, :]):
             for k_, k in enumerate(j):
                 if k < num_classes:
-                    pixels[int(k_), int(j_)] = label_colours[int(k)]
+                    if super_class:
+                        pixels[int(k_), int(j_)] = super_label_colours[int(k)]
+                    else:
+                        pixels[int(k_), int(j_)] = label_colours[int(k)]
         outputs[i] = np.array(img)
     return torch.from_numpy(outputs.transpose([0, 3, 1, 2]).astype('float32')).div_(255.0)
 

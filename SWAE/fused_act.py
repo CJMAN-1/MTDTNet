@@ -5,7 +5,14 @@ from torch import nn
 import torch.nn.functional as F
 from torch.autograd import Function
 from torch.utils.cpp_extension import load
-from util import is_custom_kernel_supported as is_custom_kernel_supported
+
+
+
+def is_custom_kernel_supported():
+    version_str = str(torch.version.cuda).split(".")
+    major = version_str[0]
+    minor = version_str[1]
+    return int(major) >= 10 and int(minor) >= 1
 
 if is_custom_kernel_supported():
     module_path = os.path.dirname(__file__)

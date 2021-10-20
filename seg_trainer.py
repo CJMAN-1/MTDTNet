@@ -22,12 +22,12 @@ class Trainer:
     def __init__(self, opt):
         self.opt = opt
         self.imsize = opt.imsize
-        self.best_miou = 0.
+        self.best_miou = 61.87
 
         self.train_loader, self.test_loader, self.data_iter = dict(), dict(), dict()
         for dset in self.opt.datasets:
             train_loader, test_loader = get_dataset(dataset=dset, batch=self.opt.batch,
-                                                    imsize=self.imsize, workers=self.opt.workers)
+                                                    imsize=self.imsize, workers=self.opt.workers, super_class=opt.super_class)
             self.train_loader[dset] = train_loader
             self.test_loader[dset] = test_loader
 
@@ -43,7 +43,6 @@ class Trainer:
         self.converts = [self.s2t, self.t2s]
         self.n_class = opt.n_class
 
-        self.loss_fns = Losses(opt, self.source, self.target)
 
     def set_default(self):
         torch.backends.cudnn.deterministic = True
@@ -68,8 +67,8 @@ class Trainer:
         stderr_log_handler.setFormatter(formatter)
 
     def set_networks(self):
-        # self.nets['T'] = Deeplab(num_classes=19, init_weights='pretrained/DeepLab_init.pth')
-        self.nets['T'] = Deeplab(num_classes=19, restore_from='pretrained_model/deeplab_gta5_36.96')
+        # self.nets['T'] = Deeplab(num_classes=self.n_class, init_weights='pretrained_model/deeplab_gta5_36.96.pth')
+        self.nets['T'] = Deeplab(num_classes=self.n_class, restore_from='pretrained_model/deeplab_city_sc_61.87')
 
         if self.opt.cuda:
             for net in self.nets.keys():
@@ -102,11 +101,10 @@ class Trainer:
 
     def train_task(self, imgs, labels):  # Train Task Networks (T)
         self.set_zero_grad()
-        pred = self.nets['T'](imgs[self.source], lbl=labels[self.source])
+        self.nets['T'](imgs[self.source], lbl=labels[self.source])
         loss_seg_src = self.nets['T'].loss_seg
-        pred_tgt = self.nets['T'](imgs[self.target], lbl=labels[self.target])
-        loss_seg_tgt = self.nets['T'].loss_seg
-        loss_task = loss_seg_src + loss_seg_tgt
+        # pred_tgt = self.nets['T'](imgs[self.target], lbl=labels[self.target])
+        loss_task = loss_seg_src
         loss_task.backward()
         self.optims['T'].step()
         self.losses['T'] = loss_task.data.item()
@@ -125,7 +123,7 @@ class Trainer:
             x = decode_labels(labels[dset].detach(), num_images=self.opt.batch)
             x = vutils.make_grid(x, normalize=True, scale_each=True, nrow=nrow)
             self.writer.add_image('4_Segmentation/%s_GT' % dset, x, self.step)
-            preds[dset] = self.nets['T'](imgs[dset])
+            preds[dset] = self.nets['T'](imgs[dset])[0]
 
         for key in preds.keys():
             pred = preds[key].data.cpu().numpy()
@@ -147,7 +145,7 @@ class Trainer:
                 if self.opt.cuda:
                     imgs, labels = imgs.cuda(), labels.cuda()
                 labels = labels.long()
-                pred = self.nets['T'](imgs)
+                pred = self.nets['T'](imgs)[0]
                 pred = pred.data.cpu().numpy()
                 pred = np.argmax(pred, axis=1)
                 gt = labels.data.cpu().numpy()
@@ -168,7 +166,7 @@ class Trainer:
             if miou > self.best_miou:
                 self.best_miou = miou
                 self.writer.add_scalar('Best MIoU/G2C', self.best_miou, self.step)
-                torch.save(self.nets['T'].state_dict(), './pretrained_model/deeplab_city_%.2f.pth' % miou)
+                torch.save(self.nets['T'].state_dict(), './pretrained_model/deeplab_city_sc_%.2f.pth' % miou)
         self.set_train()
 
     def print_loss(self):
@@ -205,9 +203,9 @@ class Trainer:
             # training
             self.train_task(imgs, labels)
 
-            # tensorboard
-            if self.step % self.opt.tensor_freq == 0:
-                self.tensor_board_log(imgs, labels)
+            # # tensorboard
+            # if self.step % self.opt.tensor_freq == 0:
+            #     self.tensor_board_log(imgs, labels)
             # evaluation
             if self.step % self.opt.eval_freq == 0:
                 self.eval()

@@ -173,7 +173,6 @@ class ResNet101(nn.Module):
             x = self.bn1(x)
             x = self.relu(x)
             x = self.maxpool(x)
-            feature = x
             # features.append(x)
             x = self.layer1(x)
             # features.append(x)
@@ -182,6 +181,7 @@ class ResNet101(nn.Module):
             x = self.layer3(x)
             # features.append(x)
             x = self.layer4(x)
+            feature = x
             # features.append(x)
             x = self.layer5(x)
 
@@ -272,6 +272,13 @@ def Deeplab(num_classes=21, init_weights=None, restore_from=None, phase='train')
                 #new_params[i] = saved_state_dict[i]
         model.load_state_dict(new_params)
     if restore_from is not None: 
-        model.load_state_dict(torch.load(restore_from + '.pth', map_location=lambda storage, loc: storage))        
+        # saved_state_dict = torch.load(restore_from + '.pth', map_location=lambda storage, loc: storage)
+        # new_params = model.state_dict().copy()
+        # for i in saved_state_dict:
+        #     i_parts = i.split('.')
+        #     if not i_parts[0] == 'layer5':
+        #         new_params[i] = saved_state_dict[i]
+        # model.load_state_dict(new_params)        
+        model.load_state_dict(torch.load(restore_from + '.pth', map_location=lambda storage, loc: storage))
     
     return model

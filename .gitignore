@@ -2,6 +2,7 @@ data
 pretrained
 pretrained_model
 tensorboard
+tensorboard1
 checkpoint
 __pycache__
 sync_batchnorm/__pycache__
