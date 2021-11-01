@@ -1,0 +1,423 @@
+from __future__ import print_function
+from random import seed
+from logging import Formatter, StreamHandler, getLogger, FileHandler
+import torchvision.utils as vutils
+from tensorboardX import SummaryWriter
+import torch.backends.cudnn
+import numpy as np
+import torch.nn.functional as F
+
+from Networks import *
+from deeplabv2 import Deeplab
+
+from utils import *
+from losses import *
+
+from dataloader.Cityscapes import decode_labels
+from dataset import get_dataset
+import torchvision.transforms as transforms
+
+def set_converts(source, targets):
+    converts = list()
+    task_converts = list()
+
+    for target in targets:
+        converts.append(source + '2' + target)
+        # converts.append(target + '2' + source)
+        task_converts.append(source + '2' + target)
+
+    return converts, task_converts
+
+class Trainer:
+    def __init__(self, opt):
+        self.opt = opt
+        self.imsize = opt.imsize
+        self.best_miou = dict()
+
+        self.train_loader, self.test_loader, self.data_iter = dict(), dict(), dict()
+        for dset in self.opt.datasets:
+            train_loader, test_loader = get_dataset(dataset=dset, batch=self.opt.batch,
+                                                    imsize=self.imsize, workers=self.opt.workers)
+            self.train_loader[dset] = train_loader
+            self.test_loader[dset] = test_loader
+
+        self.nets, self.optims, self.losses = dict(), dict(), dict()
+        self.writer = SummaryWriter('./tensorboard/%s' % opt.ex)
+        self.logger = getLogger()
+        self.step = 0
+        self.checkpoint = './checkpoint/%s' % opt.ex
+        self.datasets = opt.datasets
+        self.source = opt.datasets[0]
+        self.targets = opt.datasets[1:]
+        for target in self.targets:
+            self.best_miou[target] = 0.
+        self.n_class = opt.n_class
+        self.converts, self.task_converts = set_converts(self.source, self.targets)
+        self.w, self.h = opt.imsize
+        self.loss_fns = Losses(opt)
+        self.perceptual = dict()
+        self.seg = dict()
+        self.last_feature = dict()
+        self.down = transforms.Scale((self.h//4, self.w//4))
+
+    def set_default(self):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        # torch.backends.cudnn.enabled = False
+
+        ## Random Seed ##
+        print("Random Seed: ", self.opt.manualSeed)
+        seed(self.opt.manualSeed)
+        torch.manual_seed(self.opt.manualSeed)
+        if self.opt.cuda:
+            torch.cuda.manual_seed_all(self.opt.manualSeed)
+
+        ## Logger ##
+        file_log_handler = FileHandler(self.opt.logfile)
+        self.logger.addHandler(file_log_handler)
+        stderr_log_handler = StreamHandler(sys.stdout)
+        self.logger.addHandler(stderr_log_handler)
+        self.logger.setLevel('INFO')
+        formatter = Formatter()
+        file_log_handler.setFormatter(formatter)
+        stderr_log_handler.setFormatter(formatter)
+
+    def save_networks(self):
+        if not os.path.exists(self.checkpoint+'/%d' % self.step):
+            os.mkdir(self.checkpoint+'/%d' % self.step)
+        for key in self.nets.keys():
+            if key == 'D':
+                for dset in self.opt.datasets:
+                    torch.save(self.nets[key][dset].state_dict(),
+                               self.checkpoint + '/%d/net%s_%s.pth' % (self.step, key, dset))
+            elif key == 'T':
+                    for cv in self.test_converts:
+                        torch.save(self.nets[key][cv].state_dict(),
+                                   self.checkpoint + '/%d/net%s_%s.pth' % (self.step, key, cv))
+            else:
+                torch.save(self.nets[key].state_dict(), self.checkpoint + '/%d/net%s.pth' % (self.step, key))
+
+    def load_networks(self, step):
+        self.step = step
+        for key in self.nets.keys():
+            if key == 'D':
+                for dset in self.opt.datasets:
+                    self.nets[key][dset].load_state_dict(torch.load(self.checkpoint
+                                                                    + '/%d/net%s_%s.pth' % (step, key, dset)))
+            elif key == 'T':
+                if self.opt.task == 'clf':
+                    for cv in self.test_converts:
+                        self.nets[key][cv].load_state_dict(torch.load(self.checkpoint
+                                                                      + '/%d/net%s_%s.pth' % (step, key, cv)))
+            else:
+                self.nets[key].load_state_dict(torch.load(self.checkpoint + '/%d/net%s.pth' % (step, key)))
+
+    def set_networks(self):
+        
+        self.nets['G'] = Generator()
+        self.nets['D'] = Perceptual_Discriminator(len(self.datasets), self.n_class)
+        self.nets['S'] = Separator((self.h//4, self.w//4), self.datasets)
+        # initialization
+        if self.opt.load_networks_step is not None:
+            self.load_networks(self.opt.load_networks_step)
+        for net in self.nets.keys():
+            init_params(self.nets[net])
+        
+        self.nets['T'] = Deeplab(num_classes=19, restore_from='pretrained_model/deeplab_gta5_36.94')
+        self.nets['P'] = VGG16()
+        if self.opt.cuda:
+            for net in self.nets.keys():
+                self.nets[net].cuda()
+
+    def set_optimizers(self):
+        self.optims['G'] = optim.Adam(self.nets['G'].parameters(), lr=self.opt.lr_dra,
+                                                betas=(self.opt.beta1, 0.999),
+                                                weight_decay=self.opt.weight_decay)
+        self.optims['D'] = optim.Adam(self.nets['D'].parameters(), lr=self.opt.lr_dra,
+                                                betas=(self.opt.beta1, 0.999),
+                                                weight_decay=self.opt.weight_decay)
+        self.optims['S'] = optim.Adam(self.nets['S'].parameters(), lr=self.opt.lr_dra,
+                                                betas=(self.opt.beta1, 0.999),
+                                                weight_decay=self.opt.weight_decay)
+        self.optims['T'] = optim.SGD(self.nets['T'].parameters(), lr=self.opt.lr_seg, momentum=0.9,
+                                         weight_decay=self.opt.weight_decay_task)
+
+    def set_zero_grad(self):
+        for net in self.nets.keys():
+            self.nets[net].zero_grad()
+
+    def set_train(self):
+        for net in self.nets.keys():
+            self.nets[net].train()
+
+    def set_eval(self):
+        self.nets['T'].eval()
+
+    def get_batch(self, batch_data_iter):
+        batch_data = dict()
+        for dset in self.opt.datasets:
+            try:
+                batch_data[dset] = batch_data_iter[dset].next()
+            except StopIteration:
+                batch_data_iter[dset] = iter(self.train_loader[dset])
+                batch_data[dset] = batch_data_iter[dset].next()
+        return batch_data
+
+    def train_dis(self, imgs, labels):  # Train Discriminators(D)
+        self.set_zero_grad()
+
+        T_feature = dict()
+        converted_T_feature =dict()
+        converted_content_features = dict()
+        converted_imgs = dict()
+        D_outputs_real, D_outputs_fake = dict(), dict()
+        with torch.no_grad():
+            for dset in self.datasets:
+                _, T_feature[dset] = self.nets['T'](imgs[dset])  # B x 256 x 129 x 257
+                T_feature[dset] = F.interpolate(T_feature[dset], size=(self.h//4, self.w//4), mode='bilinear')  # B x 256 x 128 x 256
+            contents, styles = self.nets['S'](T_feature, self.converts)
+
+            for convert in self.converts:
+                source, target = convert.split('2')
+                converted_imgs[convert] = self.nets['G'](contents[convert], styles[source])
+                self.perceptual[convert] = self.nets['P'](slice_patches(converted_imgs[convert]))
+
+        for dset in self.opt.datasets:
+            D_outputs_real[dset] = self.nets['D'](slice_patches(imgs[dset]), slice_patches(self.seg[dset].unsqueeze(1)), self.perceptual[dset])  # Multi-head
+        for convert in self.converts:
+            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]), slice_patches(self.seg[convert[0]].unsqueeze(1)), self.perceptual[convert])
+
+        loss_dis = self.loss_fns.dis_(D_outputs_real, D_outputs_fake)
+        loss_dis.backward()
+        self.optims['D'].step()
+        self.losses['D'] = loss_dis.data.item()
+
+    def train_task(self, imgs, labels):  # Train Task Networks (T)
+        self.set_zero_grad()
+        features, converted_imgs, seg = dict(), dict(), dict()
+        content_features, gamma, beta= dict(), dict(), dict()
+        pred = dict()
+        last_feature = dict()
+        loss_task = 0.
+        
+        T_feature = dict()
+        converted_T_feature =dict()
+        converted_content_features = dict()
+                
+        class_weight = class_weight_by_frequency(labels[self.source], self.n_class)
+        
+        
+        _, T_feature[self.source] = self.nets['T'](imgs[self.source], lbl=labels[self.source], weight=class_weight)
+        loss_task += self.nets['T'].loss_seg
+        for target in self.targets:
+            # class_weight_target = class_weight_by_frequency(seg[target], self.n_class)
+            _, T_feature[target] = self.nets['T'](imgs[target])
+            # loss_task += self.nets['T'].loss_seg
+        for dset in self.datasets:
+            T_feature[dset] = F.interpolate(T_feature[dset], size=(self.h//4, self.w//4), mode='bilinear')  # B x 256 x 128 x 256
+
+        with torch.no_grad():
+            contents, styles = self.nets['S'](T_feature, self.converts)
+        for convert in self.task_converts:
+            self.nets['T'](contents[convert] + styles[convert[0]], lbl=labels[self.source], weight=class_weight, from_layer1=True)
+            loss_task += self.nets['T'].loss_seg
+        loss_task.backward()
+        self.optims['T'].step()
+        self.losses['T'] = loss_task.data.item()
+
+    def train_esg(self, imgs, labels):
+        self.set_zero_grad()
+        recon = dict()
+        T_feature = dict()
+        converted_T_feature =dict()
+        converted_content_features = dict()
+        converted_imgs = dict()
+        Recon_loss = 0.
+        D_outputs_fake = dict()
+        for dset in self.datasets:
+            _, T_feature[dset] = self.nets['T'](imgs[dset])  # B x 256 x 129 x 257
+            T_feature[dset] = F.interpolate(T_feature[dset], size=(self.h//4, self.w//4), mode='bilinear')  # B x 256 x 128 x 256
+            recon[dset] = self.nets['G'](T_feature[dset], 0)
+            Recon_loss += self.loss_fns.recon_single(self.down(imgs[dset]), recon[dset])
+        contents, styles = self.nets['S'](T_feature, self.converts)
+
+        for convert in self.converts:
+            source, target = convert.split('2')
+            converted_imgs[convert] = self.nets['G'](contents[convert], styles[source])
+            D_outputs_fake[convert] = self.nets['D'](slice_patches(converted_imgs[convert]), slice_patches(self.seg[source].unsqueeze(1)), self.perceptual[convert])
+            _, converted_T_feature[convert] = self.nets['T'](converted_imgs[convert])
+            converted_T_feature[convert] = F.interpolate(converted_T_feature[convert], size=(self.h//4, self.w//4), mode='bilinear')  # B x 256 x 128 x 256
+            converted_content, converted_style = self.nets['S'](converted_T_feature)
+        
+        G_loss = self.loss_fns.gen_(D_outputs_fake)
+        Consis_loss = 0.
+        # Style_loss = self.loss_fns.region_wise_style_loss(self.nets['P'], seg, imgs, converted_imgs)
+        for convert in self.converts:
+            source, target = convert.split('2')
+            Consis_loss += self.loss_fns.recon_single(contents[source], converted_content[convert])
+            # Consis_loss += self.loss_fns.recon_single(last_feature[source], last_feature[convert]) -> train_task
+
+        loss_esg = G_loss + Recon_loss + Consis_loss # + Style_loss
+        loss_esg.backward()
+        for net in ['G', 'S', 'T']:
+            self.optims[net].step()
+        self.losses['G'] = G_loss.data.item()
+        self.losses['R'] = Recon_loss.data.item()
+        self.losses['C'] = Consis_loss.data.item()
+        # self.losses['S'] = Style_loss.data.item()
+
+    def tensor_board_log(self, imgs, labels):
+        nrow = 2
+        with torch.no_grad():
+            recon = dict()
+            T_feature = dict()
+            converted_T_feature =dict()
+            converted_imgs = dict()
+            for dset in self.datasets:
+                _, T_feature[dset] = self.nets['T'](imgs[dset])  # B x 256 x 129 x 257
+                T_feature[dset] = F.interpolate(T_feature[dset], size=(self.h//4, self.w//4), mode='bilinear')  # B x 256 x 128 x 256
+                recon[dset] = self.nets['G'](T_feature[dset], 0)
+            contents, styles = self.nets['S'](T_feature, self.converts)
+
+            for convert in self.converts:
+                source, target = convert.split('2')
+                converted_imgs[convert] = self.nets['G'](contents[convert], styles[source])
+               
+        # Input Images & Recon Images
+        for dset in self.opt.datasets:
+            x = vutils.make_grid(imgs[dset].detach(), normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('1_Input_Images/%s' % dset, x, self.step)
+            # x = vutils.make_grid(slice_patches(imgs[dset].detach()), normalize=True, scale_each=False, nrow=4)
+            # self.writer.add_image('1_Input_Images/2_slice_%s' % dset, x, self.step)
+            x = vutils.make_grid(recon[dset].detach(), normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('2_Recon_Images/%s' % dset, x, self.step)
+
+
+        # Converted Images
+        for convert in converted_imgs.keys():
+            x = vutils.make_grid(converted_imgs[convert].detach(), normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('3_Converted_Images/%s' % convert, x, self.step)
+
+        # Losses
+        for loss in self.losses.keys():
+            self.writer.add_scalar('Losses/%s' % loss, self.losses[loss], self.step)
+
+        # Segmentation GT, Pred
+        self.set_eval()
+        preds = dict()
+        for dset in self.opt.datasets:
+            x = decode_labels(labels[dset].detach(), num_images=self.opt.batch)
+            x = vutils.make_grid(x, normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('4_Segmentation/1_GT_%s' % dset, x, self.step)
+            with torch.no_grad():
+                preds[dset], _ = self.nets['T'](imgs[dset])
+
+        for key in preds.keys():
+            pred = preds[key].data.cpu().numpy()
+            pred = np.argmax(pred, axis=1)
+            x = decode_labels(pred, num_images=self.opt.batch)
+            x = vutils.make_grid(x, normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('4_Segmentation/2_Pred_%s' % key, x, self.step)
+
+            pred_confidence = pred2seg(preds[key]).data.cpu().numpy()
+            x = decode_labels(pred_confidence, num_images=self.opt.batch)
+            x = vutils.make_grid(x, normalize=True, scale_each=False, nrow=nrow)
+            self.writer.add_image('4_Segmentation/3_Pred_%s_confidence' % key, x, self.step)
+        
+        self.set_train()
+
+        # 
+        x = vutils.make_grid(imgs[self.opt.datasets[0]].detach(), normalize=True, scale_each=False, nrow=nrow)
+        self.writer.add_image('1_Input_Images/1_%s' % self.opt.datasets[0], x, self.step)
+
+    def eval(self, target):
+        self.set_eval()
+
+        miou = 0.
+        confusion_matrix = np.zeros((19,) * 2)
+        with torch.no_grad():
+            for batch_idx, (imgs, labels) in enumerate(self.test_loader[target]):
+                if self.opt.cuda:
+                    imgs, labels = imgs.cuda(), labels.cuda()
+                labels = labels.long()
+                pred, _ = self.nets['T'](imgs)
+                pred = pred.data.cpu().numpy()
+                pred = np.argmax(pred, axis=1)
+                gt = labels.data.cpu().numpy()
+                confusion_matrix += MIOU(gt, pred)
+
+                score = np.diag(confusion_matrix) / (
+                            np.sum(confusion_matrix, axis=1) + np.sum(confusion_matrix, axis=0) - np.diag(
+                        confusion_matrix))
+                miou = 100 * np.nanmean(score)
+
+                progress_bar(batch_idx, len(self.test_loader[target]), 'mIoU: %.3f' % miou)
+            # Save checkpoint.
+            self.logger.info('======================================================')
+            self.logger.info('Epoch: %d | Acc: %.3f%%'
+                            % (self.step, miou))
+            self.logger.info('======================================================')
+            self.writer.add_scalar('MIoU/%s' %(self.source + '2' + target), miou, self.step)
+            
+            if miou > self.best_miou[target]:
+                self.best_miou[target] = miou
+                self.writer.add_scalar('Best_MIoU/%s' %(self.source + '2' + target), self.best_miou[target], self.step)
+                # self.save_networks()
+        self.set_train()
+
+    def print_loss(self):
+        best_mious = ''
+        for convert in self.task_converts:
+            _, target = convert.split('2')
+            best_mious += (convert + ': ' + '%.2f'%self.best_miou[target] + '|' )
+        self.logger.info(
+            '[%d/%d] D: %.2f| G: %.2f| R: %.2f| C: %.2f| T: %.2f| %s %s'
+            % (self.step, self.opt.iter,
+               self.losses['D'], self.losses['G'], self.losses['R'], self.losses['C'], self.losses['T'], best_mious, self.opt.ex))
+
+    def train(self):
+        self.set_default()
+        self.set_networks()
+        self.set_optimizers()
+        self.set_train()
+        batch_data_iter = dict()
+        for dset in self.opt.datasets:
+            batch_data_iter[dset] = iter(self.train_loader[dset])
+
+        for i in range(self.opt.iter):
+            self.step += 1
+            # get batch data
+            batch_data = self.get_batch(batch_data_iter)
+            imgs, labels = dict(), dict()
+            min_batch = self.opt.batch
+            for dset in self.opt.datasets:
+                imgs[dset], labels[dset] = batch_data[dset]
+                if self.opt.cuda:
+                    imgs[dset], labels[dset] = imgs[dset].cuda(), labels[dset].cuda()
+                labels[dset] = labels[dset].long()
+                if imgs[dset].size(0) < min_batch:
+                    min_batch = imgs[dset].size(0)
+            if min_batch < self.opt.batch:
+                for dset in self.opt.datasets:
+                    imgs[dset], labels[dset] = imgs[dset][:min_batch], labels[dset][:min_batch]
+            # training
+            with torch.no_grad():
+                for dset in self.datasets:
+                    self.perceptual[dset] = self.nets['P'](slice_patches(self.down(imgs[dset])))
+                self.seg[self.source] = labels[self.source]
+                for target in self.targets:
+                    self.seg[target] = pred2seg(self.nets['T'](imgs[target])[0])
+                _, self.last_feature[self.source] = self.nets['T'](imgs[self.source])
+            
+            self.train_dis(imgs, labels)
+            for esg in range(2):
+                self.train_esg(imgs, labels)
+            self.train_task(imgs, labels)
+            # tensorboard
+            if self.step % self.opt.tensor_freq == 0:
+                self.tensor_board_log(imgs, labels)
+            # evaluation
+            if self.step % self.opt.eval_freq == 0:
+                for target in self.targets:
+                    self.eval(target)
+            self.print_loss()
